@@ -13,6 +13,7 @@ use server::wallet::MNEMONIC_FILE;
 use tokio::fs;
 
 use crate::constants::BOARD_CONFIRMATIONS;
+use crate::lock_manager::WalletLockManager;
 use crate::daemon::barkd::{Barkd, BarkdChainSource};
 use crate::daemon::watchmand::Watchmand;
 use crate::{Bark, Bitcoind, Captaind, Lightningd, LightningdConfig};
@@ -631,6 +632,7 @@ impl<'a> BarkSdkBuilder<'a> {
 		let seed = if let Some(key) = self.external_mailbox { seed.with_mailbox_keypair(key) } else { seed };
 		let wallet = bark::Wallet::open(network, seed, cfg, OpenWalletArgs {
 			persister: Some(db),
+			lock_manager: Some(Box::new(WalletLockManager::for_datadir(&datadir))),
 			create_if_not_exists: true,
 			onchain: Some(onchain.clone()),
 			..Default::default()
