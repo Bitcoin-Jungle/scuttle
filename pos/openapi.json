@@ -1,0 +1,2073 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "posd",
+    "description": "The point-of-sale and Lightning address service. The guide, with the signed message formats and how the rails work, is pos/docs/api.md.",
+    "license": {
+      "name": "MIT",
+      "identifier": "MIT"
+    },
+    "version": "0.1.0"
+  },
+  "servers": [
+    {
+      "url": "/",
+      "description": "A brand's public_url, on the posd that serves it. Each brand's domain has its own Lightning addresses."
+    }
+  ],
+  "paths": {
+    "/.well-known/lnurlp/{name}": {
+      "get": {
+        "tags": [
+          "lnurl"
+        ],
+        "summary": "The pay request of a Lightning address (LUD-16).",
+        "description": "Each brand's domain has its own names: posd tells them apart by the\nrequest's host (see [request_host]).",
+        "operationId": "pay_request",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name before the @",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The pay request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PayRequest"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such Lightning address on this domain",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LnurlErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/api/v1/admin/lightning-addresses": {
+      "post": {
+        "tags": [
+          "operator"
+        ],
+        "summary": "Gives a store of the operator's brand a Lightning address, reserved or not.",
+        "operationId": "assign_lightning_address",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssignLightningAddress"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The store",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Store"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The name or the Ark address is not valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The token is not a brand's admin_token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No store of the brand has the address",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Another store has the name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_token": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/reserved-names": {
+      "post": {
+        "tags": [
+          "operator"
+        ],
+        "summary": "Reserves names on the operator's domain.",
+        "description": "A reserved name cannot be taken at registration or by an owner's\nchange, on that domain only. Reserving a name again, or one a store\nalready has, changes nothing.",
+        "operationId": "reserve_names",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReserveNames"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "How many names were reserved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Reserved"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Too many names, or a name is not valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The token is not a brand's admin_token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_token": []
+          }
+        ]
+      }
+    },
+    "/api/v1/lnurlp/{name}/callback": {
+      "get": {
+        "tags": [
+          "lnurl"
+        ],
+        "summary": "Makes the invoice for a Lightning address payment (LUD-06 callback).",
+        "operationId": "callback",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name before the @",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "amount",
+            "in": "query",
+            "description": "In msat: whole sats, within the pay request's bounds.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The invoice",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallbackResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The amount is out of range or not whole sats",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LnurlErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such Lightning address on this domain",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LnurlErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many unpaid invoices are open; try again in a few minutes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LnurlErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The Ark server failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LnurlErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/api/v1/owner/challenge": {
+      "post": {
+        "tags": [
+          "owner"
+        ],
+        "summary": "Starts an owner login: a challenge for the owner to sign.",
+        "description": "posd keeps nothing for a challenge: it is authenticated by its last\nline, `mac:`, which the owner signs with the rest.",
+        "operationId": "challenge",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChallengeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The challenge to sign",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChallengeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The address is not a valid Ark address",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/api/v1/owner/devices": {
+      "get": {
+        "tags": [
+          "owner"
+        ],
+        "summary": "The store's terminals, revoked ones too.",
+        "operationId": "list_devices",
+        "responses": {
+          "200": {
+            "description": "The devices",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Devices"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The token is missing, not valid, or expired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "owner_token": []
+          }
+        ]
+      }
+    },
+    "/api/v1/owner/devices/{id}": {
+      "delete": {
+        "tags": [
+          "owner"
+        ],
+        "summary": "Revokes a terminal. Its next request is `401`.",
+        "operationId": "revoke_device",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The device id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Revoked, now or before"
+          },
+          "401": {
+            "description": "The token is missing, not valid, or expired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such device in this store",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "owner_token": []
+          }
+        ]
+      }
+    },
+    "/api/v1/owner/invites": {
+      "post": {
+        "tags": [
+          "owner"
+        ],
+        "summary": "Makes a single-use pairing link for a terminal.",
+        "operationId": "create_invite",
+        "responses": {
+          "200": {
+            "description": "The pairing link",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Invite"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The token is missing, not valid, or expired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "owner_token": []
+          }
+        ]
+      }
+    },
+    "/api/v1/owner/login": {
+      "post": {
+        "tags": [
+          "owner"
+        ],
+        "summary": "Finishes an owner login with the signed challenge. A challenge works once.",
+        "operationId": "login",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The owner token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The signature does not verify, or the challenge is not posd's, used or expired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No store is registered for the address",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/api/v1/owner/sales": {
+      "get": {
+        "tags": [
+          "owner"
+        ],
+        "summary": "The store's sales from every terminal and its Lightning address, newest first.",
+        "operationId": "owner_list_sales",
+        "parameters": [
+          {
+            "name": "before",
+            "in": "query",
+            "description": "The id of the last sale of the previous page.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "At most 100. The default is 50.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "maximum": 100,
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of sales",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SalesPage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The token is missing, not valid, or expired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "owner_token": []
+          }
+        ]
+      }
+    },
+    "/api/v1/owner/sales.csv": {
+      "get": {
+        "tags": [
+          "owner"
+        ],
+        "summary": "The store's sales as CSV, with the columns of the terminal's export.",
+        "operationId": "owner_sales_csv",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "description": "A date (`2026-11-20`, in UTC) or an RFC 3339 time.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "A date or an RFC 3339 time. A date includes that whole day.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The CSV",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A date is not valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The token is missing, not valid, or expired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "owner_token": []
+          }
+        ]
+      }
+    },
+    "/api/v1/owner/store": {
+      "get": {
+        "tags": [
+          "owner"
+        ],
+        "summary": "The owner's store.",
+        "operationId": "get_store",
+        "responses": {
+          "200": {
+            "description": "The store",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Store"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The token is missing, not valid, or expired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "owner_token": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "owner"
+        ],
+        "summary": "Changes the owner's store.",
+        "operationId": "update_store",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateStore"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The store",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Store"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A field is not valid, or posd does not serve the brand",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The token is missing, not valid, or expired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The Lightning address name is taken or reserved on the store's domain",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "owner_token": []
+          }
+        ]
+      }
+    },
+    "/api/v1/pair": {
+      "post": {
+        "tags": [
+          "terminal"
+        ],
+        "summary": "Pairs a terminal with a pairing code. A code works once.",
+        "operationId": "pair",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PairRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The device token and its store",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PairResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The device name is not valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The code is unknown, used or expired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/api/v1/rate": {
+      "get": {
+        "tags": [
+          "terminal"
+        ],
+        "summary": "The bitcoin price in the store's currency.",
+        "operationId": "rate",
+        "responses": {
+          "200": {
+            "description": "The current price",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rate"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The token is missing, not valid, or revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The price feed failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/api/v1/sales": {
+      "get": {
+        "tags": [
+          "terminal"
+        ],
+        "summary": "The store's sales, newest first.",
+        "operationId": "list_sales",
+        "parameters": [
+          {
+            "name": "before",
+            "in": "query",
+            "description": "The id of the last sale of the previous page.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "At most 100. The default is 50.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "maximum": 100,
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of sales",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SalesPage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The token is missing, not valid, or revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "terminal"
+        ],
+        "summary": "Creates a sale.",
+        "description": "With an `Idempotency-Key`, a request repeated with the same key and body,\nas after a response lost on a poor network, returns the sale of the\nfirst request instead of making another.",
+        "operationId": "create_sale",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "Unique per sale on the device.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[A-Za-z0-9_-]{1,64}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSale"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The sale",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaleView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The amount, memo or key is not valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The token is missing, not valid, or revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The key was used with a different body, or `currency` is not the store's",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The price feed or the Ark server failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/api/v1/sales.csv": {
+      "get": {
+        "tags": [
+          "terminal"
+        ],
+        "summary": "The store's sales as CSV.",
+        "description": "The columns are `id, created_at, paid_at, state, paid_rail, amount_sat,\nreceived_sat, fiat_amount, currency, btc_price, memo, device_name`.",
+        "operationId": "sales_csv",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "description": "A date (`2026-11-20`, in UTC) or an RFC 3339 time.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "A date or an RFC 3339 time. A date includes that whole day.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The CSV",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A date is not valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The token is missing, not valid, or revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/api/v1/sales/{id}": {
+      "get": {
+        "tags": [
+          "terminal"
+        ],
+        "summary": "A sale of the terminal's store, at once or by long-poll.",
+        "operationId": "get_sale",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The sale id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "wait",
+            "in": "query",
+            "description": "Hold the request until the sale is no longer in this state, for at\nmost 25 seconds. Repeat it with the last state seen to follow a sale.",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/SaleState"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The sale",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaleView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`wait` is not a state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The token is missing, not valid, or revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such sale in this store",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/api/v1/sales/{id}/cancel": {
+      "post": {
+        "tags": [
+          "terminal"
+        ],
+        "summary": "Cancels an open sale.",
+        "description": "posd first checks the sale's on-chain address, then cancels the\nLightning invoice. When a payment was made or is arriving, the sale is\nnot canceled: it is `409`, and the sale soon shows its new state.",
+        "operationId": "cancel_sale",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The sale id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The canceled sale",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaleView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The token is missing, not valid, or revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such sale in this store",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The sale is not open, or a payment for it was made",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The chain source or barkd failed; the sale stays open",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/api/v1/stores": {
+      "post": {
+        "tags": [
+          "owner"
+        ],
+        "summary": "Registers a store, signed by the owner's Ark key.",
+        "description": "The signed message is these lines, joined by `\\n`, with no trailing\nnewline: `posd registration v1`, then `name:`, `ark_address:`,\n`onchain_descriptor:`, `currency:`, `brand:`, `lightning_address_name:`\nand `timestamp:`, each followed by its field.",
+        "operationId": "register",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The new store",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoreResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The signature, timestamp, address, descriptor, currency, brand or Lightning address name is not valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A store is registered for the address, or the Lightning address name is taken or reserved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/api/v1/terminal": {
+      "get": {
+        "tags": [
+          "terminal"
+        ],
+        "summary": "The terminal's store and name.",
+        "operationId": "terminal",
+        "responses": {
+          "200": {
+            "description": "The terminal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TerminalView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The token is missing, not valid, or revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AssignLightningAddress": {
+        "type": "object",
+        "required": [
+          "ark_address",
+          "name"
+        ],
+        "properties": {
+          "ark_address": {
+            "type": "string",
+            "description": "The store's Ark address, as registered.",
+            "example": "ark1…"
+          },
+          "name": {
+            "type": "string",
+            "example": "cornercafe",
+            "pattern": "^[a-z0-9._-]{1,64}$"
+          }
+        }
+      },
+      "BrandKey": {
+        "type": "string",
+        "description": "The key of a brand, as in `[brands.<key>]`: 1 to 32 lowercase letters,\ndigits and `-`.",
+        "example": "example",
+        "pattern": "^[a-z0-9-]{1,32}$"
+      },
+      "CallbackResponse": {
+        "type": "object",
+        "required": [
+          "pr",
+          "routes"
+        ],
+        "properties": {
+          "pr": {
+            "type": "string",
+            "description": "The forwarding invoice. It carries the metadata's text description,\nnot its hash: the Ark server cannot put a hash in an invoice."
+          },
+          "routes": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Always empty."
+          }
+        }
+      },
+      "ChallengeRequest": {
+        "type": "object",
+        "required": [
+          "ark_address"
+        ],
+        "properties": {
+          "ark_address": {
+            "type": "string",
+            "example": "ark1…"
+          }
+        }
+      },
+      "ChallengeResponse": {
+        "type": "object",
+        "required": [
+          "challenge"
+        ],
+        "properties": {
+          "challenge": {
+            "type": "string",
+            "description": "The text to sign. It works once, within 5 minutes."
+          }
+        }
+      },
+      "CreateSale": {
+        "type": "object",
+        "description": "A new sale. Give exactly one of `fiat_amount` and `amount_sat`.",
+        "properties": {
+          "amount_sat": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "At most 21 million bitcoin.",
+            "example": 35000,
+            "minimum": 0
+          },
+          "currency": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The currency the terminal showed `fiat_amount` in. When it is not the\nstore's, as after the owner changed it, the sale is refused with\n`409` instead of charging in another currency.",
+            "example": "CRC"
+          },
+          "fiat_amount": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A decimal in the store's currency, with at most its decimal places.",
+            "example": "12.50"
+          },
+          "memo": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "At most 200 characters.",
+            "example": "2 coffees"
+          }
+        }
+      },
+      "DeviceView": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string",
+            "example": "Front till"
+          },
+          "revoked_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "`null` while the device works."
+          }
+        }
+      },
+      "Devices": {
+        "type": "object",
+        "required": [
+          "devices"
+        ],
+        "properties": {
+          "devices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeviceView"
+            }
+          }
+        }
+      },
+      "ErrorBody": {
+        "type": "object",
+        "description": "The body of every error response.",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "What went wrong, for people. Internal and upstream errors say only that.",
+            "example": "the sale is paid"
+          }
+        }
+      },
+      "Invite": {
+        "type": "object",
+        "required": [
+          "code",
+          "url",
+          "expires_at"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "24 hours after it was made."
+          },
+          "url": {
+            "type": "string",
+            "description": "The pairing link, on the store's brand's domain.",
+            "example": "https://pay.example.com/pair/ad13dcd6ba79d527ef933317"
+          }
+        }
+      },
+      "LnurlErrorBody": {
+        "type": "object",
+        "description": "The body of an LNURL error, as LUD-06 has it, so the payer's wallet\nshows the reason.",
+        "required": [
+          "status",
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string",
+            "example": "the amount is out of range"
+          },
+          "status": {
+            "type": "string",
+            "example": "ERROR"
+          }
+        }
+      },
+      "LoginRequest": {
+        "type": "object",
+        "required": [
+          "ark_address",
+          "challenge",
+          "signature"
+        ],
+        "properties": {
+          "ark_address": {
+            "type": "string",
+            "example": "ark1…"
+          },
+          "challenge": {
+            "type": "string",
+            "description": "The challenge, as returned."
+          },
+          "signature": {
+            "type": "string",
+            "description": "The hex BIP 340 signature of the challenge with bark's message signing."
+          }
+        }
+      },
+      "LoginResponse": {
+        "type": "object",
+        "required": [
+          "token",
+          "expires_at"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "token": {
+            "type": "string",
+            "description": "The owner token. posd keeps only its hash, so it is shown once."
+          }
+        }
+      },
+      "PairRequest": {
+        "type": "object",
+        "required": [
+          "code",
+          "device_name"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "The code from the pairing link `/pair/<code>`.",
+            "example": "ad13dcd6ba79d527ef933317"
+          },
+          "device_name": {
+            "type": "string",
+            "description": "1 to 64 characters, shown to the owner and on receipts.",
+            "example": "Front till"
+          }
+        }
+      },
+      "PairResponse": {
+        "type": "object",
+        "required": [
+          "token",
+          "store"
+        ],
+        "properties": {
+          "store": {
+            "$ref": "#/components/schemas/Store"
+          },
+          "token": {
+            "type": "string",
+            "description": "The device token. posd keeps only its hash, so it is shown once."
+          }
+        }
+      },
+      "PayRequest": {
+        "type": "object",
+        "description": "A LUD-06 pay request.",
+        "required": [
+          "tag",
+          "callback",
+          "minSendable",
+          "maxSendable",
+          "metadata"
+        ],
+        "properties": {
+          "callback": {
+            "type": "string"
+          },
+          "maxSendable": {
+            "type": "integer",
+            "format": "int64",
+            "description": "In msat, set in the posd config.",
+            "minimum": 0
+          },
+          "metadata": {
+            "type": "string",
+            "description": "The LUD-06 metadata, a JSON array as a string."
+          },
+          "minSendable": {
+            "type": "integer",
+            "format": "int64",
+            "description": "In msat.",
+            "example": 1000,
+            "minimum": 0
+          },
+          "tag": {
+            "type": "string",
+            "example": "payRequest"
+          }
+        }
+      },
+      "Rail": {
+        "type": "string",
+        "description": "The rail that paid a sale.",
+        "enum": [
+          "lightning",
+          "onchain"
+        ]
+      },
+      "Rate": {
+        "type": "object",
+        "required": [
+          "currency",
+          "btc_price",
+          "fetched_at"
+        ],
+        "properties": {
+          "btc_price": {
+            "type": "string",
+            "description": "The price of one bitcoin in `currency`.",
+            "example": "62500000.00"
+          },
+          "currency": {
+            "type": "string",
+            "example": "CRC"
+          },
+          "fetched_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "RegisterRequest": {
+        "type": "object",
+        "required": [
+          "registration",
+          "signature"
+        ],
+        "properties": {
+          "registration": {
+            "$ref": "#/components/schemas/Registration"
+          },
+          "signature": {
+            "type": "string",
+            "description": "The hex BIP 340 signature of the registration message by the key of\n`ark_address`, with bark's message signing."
+          }
+        }
+      },
+      "Registration": {
+        "type": "object",
+        "description": "The fields of a store registration. The owner signs [Registration::message]\nof them.",
+        "required": [
+          "name",
+          "ark_address",
+          "onchain_descriptor",
+          "currency",
+          "brand",
+          "timestamp"
+        ],
+        "properties": {
+          "ark_address": {
+            "type": "string",
+            "description": "The Ark address that receives the payments. Its key owns the store.",
+            "example": "ark1…"
+          },
+          "brand": {
+            "$ref": "#/components/schemas/BrandKey",
+            "description": "The key of the store's brand in posd's config: its terminals' look\nand the domain of its Lightning address and pairing links."
+          },
+          "currency": {
+            "type": "string",
+            "description": "A currency posd's price source quotes, such as `USD` or `CRC`.",
+            "example": "CRC"
+          },
+          "lightning_address_name": {
+            "type": "string",
+            "description": "The name of the store's Lightning address on the brand's domain, if\nit wants one. Empty or absent for none.",
+            "example": "cornercafe",
+            "pattern": "^[a-z0-9._-]{0,64}$"
+          },
+          "name": {
+            "type": "string",
+            "example": "Corner Café"
+          },
+          "onchain_descriptor": {
+            "type": "string",
+            "description": "The public descriptor of the on-chain account the host app keeps.",
+            "example": "tr([fingerprint/86'/0'/1']xpub…/0/*)"
+          },
+          "timestamp": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds since the UNIX epoch, within 10 minutes of posd's clock.",
+            "example": 1795190400,
+            "minimum": 0
+          }
+        }
+      },
+      "ReserveNames": {
+        "type": "object",
+        "required": [
+          "names"
+        ],
+        "properties": {
+          "names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "At most 10,000 Lightning address names.",
+            "example": [
+              "cornercafe"
+            ],
+            "maxItems": 10000
+          }
+        }
+      },
+      "Reserved": {
+        "type": "object",
+        "required": [
+          "reserved"
+        ],
+        "properties": {
+          "reserved": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many of the names were newly reserved.",
+            "minimum": 0
+          }
+        }
+      },
+      "SaleState": {
+        "type": "string",
+        "description": "The state of a sale. `paid`, `expired` and `canceled` are final; an\n`in-progress` sale has an on-chain payment in the mempool.",
+        "enum": [
+          "open",
+          "in-progress",
+          "paid",
+          "expired",
+          "canceled"
+        ]
+      },
+      "SaleView": {
+        "type": "object",
+        "description": "The sale as the API shows it.",
+        "required": [
+          "id",
+          "created_at",
+          "expires_at",
+          "state",
+          "amount_sat",
+          "payment_request",
+          "lightning_invoice",
+          "received_sat"
+        ],
+        "properties": {
+          "amount_sat": {
+            "type": "integer",
+            "format": "int64",
+            "example": 35000
+          },
+          "btc_price": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The price of one bitcoin in `currency` the sale used.",
+            "example": "62500000.00"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "currency": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "CRC"
+          },
+          "device_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`null` for a Lightning address payment.",
+            "example": "Front till"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When an `open` sale expires. An `in-progress` sale stays so past it\nuntil its payment confirms."
+          },
+          "fiat_amount": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The amount keyed in, as a decimal in `currency`. `null` for a sale\nkeyed in sats.",
+            "example": "12.50"
+          },
+          "id": {
+            "type": "string",
+            "description": "Random, so that sales cannot be enumerated.",
+            "example": "f1a01eb4e3e74b15220ac2be24fc38e0"
+          },
+          "lightning_invoice": {
+            "type": "string",
+            "description": "The forwarding invoice.",
+            "example": "lnbc…"
+          },
+          "memo": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "2 coffees"
+          },
+          "onchain_address": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`null` below the store's `onchain_min_sat`.",
+            "example": "bc1p…"
+          },
+          "paid_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "paid_rail": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Rail"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "payment_request": {
+            "type": "string",
+            "description": "Both rails in one BIP 321 URI. Terminals show one rail at a time.",
+            "example": "bitcoin:bc1p…?amount=0.00035&lightning=lnbc…"
+          },
+          "received_sat": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Higher than `amount_sat` when the payer overpaid or paid both rails."
+          },
+          "state": {
+            "$ref": "#/components/schemas/SaleState"
+          }
+        }
+      },
+      "SalesPage": {
+        "type": "object",
+        "required": [
+          "sales"
+        ],
+        "properties": {
+          "sales": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SaleView"
+            },
+            "description": "Newest first."
+          }
+        }
+      },
+      "Store": {
+        "type": "object",
+        "description": "How a store looks to the API.",
+        "required": [
+          "name",
+          "currency",
+          "currency_decimals",
+          "onchain_min_sat",
+          "brand"
+        ],
+        "properties": {
+          "brand": {
+            "$ref": "#/components/schemas/BrandKey",
+            "description": "The key of the store's brand in posd's config."
+          },
+          "currency": {
+            "type": "string",
+            "example": "CRC"
+          },
+          "currency_decimals": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The decimal places a sale in `currency` may have.",
+            "example": 2,
+            "minimum": 0
+          },
+          "lightning_address": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`null` when the store has none. Its domain is the host of the\nbrand's public URL.",
+            "example": "cornercafe@pay.example.com"
+          },
+          "name": {
+            "type": "string",
+            "example": "Corner Café"
+          },
+          "onchain_min_sat": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Sales below this many sats offer no on-chain address.",
+            "example": 50000
+          }
+        }
+      },
+      "StoreResponse": {
+        "type": "object",
+        "required": [
+          "store"
+        ],
+        "properties": {
+          "store": {
+            "$ref": "#/components/schemas/Store"
+          }
+        }
+      },
+      "TerminalView": {
+        "type": "object",
+        "required": [
+          "store",
+          "device_name"
+        ],
+        "properties": {
+          "device_name": {
+            "type": "string",
+            "example": "Front till"
+          },
+          "store": {
+            "$ref": "#/components/schemas/Store"
+          }
+        }
+      },
+      "UpdateStore": {
+        "type": "object",
+        "description": "The fields to change. Fields left out stay as they are.",
+        "properties": {
+          "brand": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/BrandKey"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "currency": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lightning_address_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "1 to 64 lowercase letters, digits, `.`, `-` and `_`. An empty name\nremoves the Lightning address.",
+            "pattern": "^[a-z0-9._-]{0,64}$"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "1 to 64 characters."
+          },
+          "onchain_min_sat": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "At most 21 million bitcoin.",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "admin_token": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "A brand's admin_token from the posd config."
+      },
+      "device_token": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "The device token a terminal gets from pairing."
+      },
+      "owner_token": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "The owner token from a signed login. It lasts 24 hours."
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "terminal",
+      "description": "A paired terminal, with its device token."
+    },
+    {
+      "name": "owner",
+      "description": "A store's owner wallet, which signs with its Ark key."
+    },
+    {
+      "name": "operator",
+      "description": "A brand's own services, with the brand's admin_token."
+    },
+    {
+      "name": "lnurl",
+      "description": "LUD-06 and LUD-16 Lightning addresses, for any payer."
+    }
+  ]
+}

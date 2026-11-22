@@ -159,6 +159,7 @@ dependencies = [
  "bark-bitcoin-ext",
  "bark-cln-rpc",
  "bark-json",
+ "bark-pos",
  "bark-rest",
  "bark-rest-client",
  "bark-server",
@@ -537,6 +538,42 @@ dependencies = [
  "tokio",
  "tokio-util",
  "wasm-bindgen-futures",
+]
+
+[[package]]
+name = "bark-pos"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ark-lib",
+ "axum",
+ "bark-json",
+ "bark-rest-client",
+ "bark-server-rpc",
+ "bb8",
+ "bb8-postgres",
+ "bdk_wallet",
+ "bitcoin",
+ "chrono",
+ "clap",
+ "config",
+ "esplora-client",
+ "futures",
+ "lightning-invoice",
+ "postgres-types",
+ "refinery",
+ "reqwest 0.13.4",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-postgres",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "utoipa",
+ "utoipa-axum",
 ]
 
 [[package]]

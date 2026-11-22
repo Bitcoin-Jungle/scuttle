@@ -1,10 +1,11 @@
 # Database Schema
 
 When you need the full DDL (table definitions, indexes, constraints) for the
-server or bark database, read the corresponding `schema.sql` file:
+server, bark or posd database, read the corresponding `schema.sql` file:
 
 - **Server**: `server/schema.sql`
 - **Bark**: `bark/schema.sql`
+- **posd**: `pos/schema.sql` (`just dump-posd-sql-schema`)
 
 These files contain the complete, up-to-date schema in a single place.
 

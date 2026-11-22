@@ -1,0 +1,85 @@
+# posd configuration. Every value can be overridden with an environment
+# variable: POSD__<SECTION>__<KEY>, for example POSD__POSTGRES__PASSWORD.
+
+network = "bitcoin"
+
+# The Ark server's public gRPC address.
+ark_server_url = "https://ark.example.com"
+
+[http]
+listen = "127.0.0.1:3080"
+# Take a request's domain from X-Forwarded-Host instead of Host. Set it
+# only behind a proxy that sets that header itself.
+# trust_forwarded_host = false
+
+# The brands this posd serves, by key, each on its own domain. A store's
+# Lightning address is <name>@<host of public_url>, and its pairing links
+# are under public_url. Each domain has its own Lightning address names. A
+# proxy in front of posd must pass the original Host (or set
+# X-Forwarded-Host, with http.trust_forwarded_host), which tells the
+# domains apart. What a brand's assets
+# directory holds is in docs/brands.md.
+[brands.example]
+name = "Example"
+public_url = "https://pay.example.com"
+# The name of an installed terminal. The default is "<name> POS".
+# app_name = "Example POS"
+# The name under the home screen icon. The default is app_name.
+# short_name = "Example"
+# The page background in light and dark mode, for the browser chrome.
+# theme_color = "#f4f4f2"
+# theme_color_dark = "#121212"
+# assets = "/etc/posd/brands/example"
+# The brand's operator API (reserved names, assigning names), at least 32
+# characters. Leave it out for no operator API. Or POSD__BRANDS__EXAMPLE__ADMIN_TOKEN.
+# admin_token = ""
+
+# posd's own database.
+[postgres]
+host = "localhost"
+port = 5432
+name = "posd"
+user = "posd"
+# password = ""
+
+# The private barkd that issues and claims forwarding invoices. Do not
+# expose it publicly.
+[barkd]
+url = "http://127.0.0.1:3000"
+# token = ""
+
+# The chain source for on-chain sales: either a bitcoind, where posd creates
+# a watch-only wallet and imports one address per sale (it holds no keys),
+# or a public Esplora API. Set exactly one.
+# esplora_url = "https://blockstream.info/api"
+[bitcoind]
+url = "http://127.0.0.1:8332"
+cookie = "/var/lib/bitcoind/.cookie"
+wallet = "posd"
+
+[price]
+# Where the bitcoin price comes from:
+# - "bull-bitcoin": the Bull Bitcoin public price API (the default).
+# - "json": any API that answers JSON. {currency} in url and pointer is the
+#   currency code; pointer is the JSON pointer to the price of one bitcoin.
+# - "fixed": fixed_btc_price in every currency, for test networks only.
+source = "bull-bitcoin"
+cache_secs = 60
+# url = "https://api.coinbase.com/v2/prices/BTC-{currency}/spot"
+# pointer = "/data/amount"
+# fixed_btc_price = "62500000.00"
+# The currencies a store can use, with the decimal places of a sale. The
+# default is what the Bull Bitcoin API quotes; "json" and "fixed" need it.
+# currencies = { USD = 2, EUR = 2, CRC = 2, COP = 0 }
+
+[sales]
+# How long a sale and its invoices stay open.
+expiry_secs = 600
+# The on-chain minimum for a new store. The owner can change it per store.
+default_onchain_min_sat = 50000
+# The largest Lightning address payment.
+lnurl_max_sat = 10000000
+poll_interval_ms = 2000
+# How long after a sale expires its payments are still checked: an on-chain
+# address for late payments, a Lightning payment barkd has not settled.
+watch_secs = 604800

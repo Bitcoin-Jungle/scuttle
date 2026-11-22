@@ -205,6 +205,9 @@ in {
 			# `tokio-console` cargo feature on bark-server)
 			pkgs.tokio-console
 
+			# for posd's terminal web app (pos/web)
+			pkgs.nodejs_22
+
 			# for integration tests
 			postgresql
 			bitcoin
