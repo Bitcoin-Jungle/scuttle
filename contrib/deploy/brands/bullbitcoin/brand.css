@@ -1,0 +1,61 @@
+/* Bull Bitcoin: warm cream, Bebas Neue display type in capitals. posd serves
+   this file after the terminal's own CSS, so it sets the --pos-* tokens the
+   terminal styles itself with. */
+
+@font-face {
+	font-family: 'Bebas Neue';
+	font-style: normal;
+	font-weight: 100 900;
+	font-display: swap;
+	src: url('BebasNeue-Regular.woff2') format('woff2');
+}
+
+:root {
+	--pos-page: #f5f0e8;
+	--pos-surface: #fffaf0;
+	--pos-muted: #eadfce;
+	--pos-line: #d7c8b4;
+	--pos-ink: #211f1a;
+	--pos-ink-soft: #776b5a;
+	--pos-accent: #b7000b;
+	--pos-on-accent: #fffaf0;
+	--pos-ok: #1f513a;
+	--pos-ok-bg: #d9f3df;
+	--pos-warn: #725315;
+	--pos-warn-bg: #fff0c7;
+	--pos-err: #8c2d28;
+	--pos-err-bg: #ffe0d9;
+	--pos-danger: #a9362f;
+	--pos-confetti: #b7000b, #1f513a, #fffaf0;
+	--pos-paid: #1f6a43;
+	--pos-paid-ink: #15452c;
+	--pos-scrim: rgb(33 31 26 / 0.45);
+	--pos-font-body: 'Aptos', 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+	--pos-font-display: 'Bebas Neue', ui-sans-serif, system-ui, sans-serif;
+	--pos-display-weight: 400;
+	--pos-display-boost: 1.3;
+	--pos-case: uppercase;
+	--pos-tracking-display: 0.03em;
+	--pos-tracking-label: 0.12em;
+	--pos-tracking-button: 0.06em;
+	--pos-radius-md: 8px;
+	--pos-radius-lg: 0.5rem;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root {
+		--pos-page: #161512;
+		--pos-surface: #211f1a;
+		--pos-muted: #2c2922;
+		--pos-line: #3a342a;
+		--pos-ink: #fff6e8;
+		--pos-ink-soft: #b9aa91;
+		--pos-ok: #8bc8a4;
+		--pos-ok-bg: #1f3d2a;
+		--pos-warn: #f0d38a;
+		--pos-warn-bg: #3a321f;
+		--pos-err: #e8a49e;
+		--pos-err-bg: #3a211e;
+		--pos-scrim: rgb(0 0 0 / 0.6);
+	}
+}
