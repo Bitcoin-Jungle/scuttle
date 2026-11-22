@@ -1,0 +1,262 @@
+@import 'tailwindcss';
+@import '@fontsource-variable/dm-sans';
+
+/* Components style themselves only through the tokens below, which read
+   the --pos-* variables. This file sets them for the neutral brand; a
+   brand's brand.css, which posd serves after it, sets its own on :root, in
+   light and dark. */
+
+@theme inline {
+	--color-page: var(--pos-page);
+	--color-surface: var(--pos-surface);
+	--color-muted: var(--pos-muted);
+	--color-line: var(--pos-line);
+	--color-ink: var(--pos-ink);
+	--color-ink-soft: var(--pos-ink-soft);
+	--color-accent: var(--pos-accent);
+	--color-on-accent: var(--pos-on-accent);
+	--color-ok: var(--pos-ok);
+	--color-ok-bg: var(--pos-ok-bg);
+	--color-warn: var(--pos-warn);
+	--color-warn-bg: var(--pos-warn-bg);
+	--color-err: var(--pos-err);
+	--color-err-bg: var(--pos-err-bg);
+	--color-danger: var(--pos-danger);
+	--color-paid: var(--pos-paid);
+	--color-paid-ink: var(--pos-paid-ink);
+	--color-scrim: var(--pos-scrim);
+	--font-display: var(--pos-font-display);
+	--tracking-display: var(--pos-tracking-display);
+	--tracking-label: var(--pos-tracking-label);
+	--tracking-button: var(--pos-tracking-button);
+	--radius-md: var(--pos-radius-md);
+	--radius-lg: var(--pos-radius-lg);
+	/* The terminal's type scale, in px of the DM Sans layout. A condensed
+	   display font sets --pos-display-boost above 1 to fill the same space. */
+	--text-amount: calc(3.375rem * var(--pos-display-boost));
+	--text-amount-md: calc(2.875rem * var(--pos-display-boost));
+	--text-amount-sm: calc(2.5rem * var(--pos-display-boost));
+	--text-sale: calc(2.375rem * var(--pos-display-boost));
+	--text-hero: calc(2.75rem * var(--pos-display-boost));
+	--text-paid-amount: calc(1.875rem * var(--pos-display-boost));
+	--text-title: calc(1.625rem * var(--pos-display-boost));
+	--text-heading: calc(1.25rem * var(--pos-display-boost));
+	--text-button: calc(1.1875rem * var(--pos-display-boost));
+	--text-button-sm: calc(1.0625rem * var(--pos-display-boost));
+}
+
+/* Upper case where the theme sets headings and labels in capitals. */
+@utility brand-case {
+	text-transform: var(--pos-case);
+}
+
+@layer utilities {
+	.font-display {
+		font-weight: var(--pos-display-weight);
+	}
+}
+
+/* The neutral brand: ink on light grey, a deep blue accent, DM Sans. */
+:root {
+	--pos-page: #f4f4f2;
+	--pos-surface: #ffffff;
+	--pos-muted: #e7e7e3;
+	--pos-line: #d5d5cf;
+	--pos-ink: #1a1a18;
+	--pos-ink-soft: #5d5d57;
+	--pos-accent: #1f4e79;
+	--pos-on-accent: #ffffff;
+	--pos-ok: #23663a;
+	--pos-ok-bg: #d9eedf;
+	--pos-warn: #7d4a00;
+	--pos-warn-bg: #f8e6c8;
+	--pos-err: #b3261e;
+	--pos-err-bg: #f8dcd8;
+	--pos-danger: #b3261e;
+	--pos-confetti: #1f4e79, #23663a, #f2b134, #ffffff;
+	/* The paid screen: white on green in both modes. */
+	--pos-paid: #23663a;
+	--pos-paid-ink: #174428;
+	--pos-scrim: rgb(20 20 18 / 0.45);
+	--pos-font-body: 'DM Sans Variable', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+	--pos-font-display: 'DM Sans Variable', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+	--pos-display-weight: 600;
+	--pos-display-boost: 1;
+	--pos-case: none;
+	--pos-tracking-display: -0.015em;
+	--pos-tracking-label: 0.01em;
+	--pos-tracking-button: 0;
+	--pos-radius-md: 12px;
+	--pos-radius-lg: 16px;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root {
+		--pos-page: #121212;
+		--pos-surface: #1c1c1c;
+		--pos-muted: #2a2a2a;
+		--pos-line: #383838;
+		--pos-ink: #f2f2ee;
+		--pos-ink-soft: #a6a6a0;
+		--pos-accent: #5b8fc4;
+		--pos-on-accent: #0d1b29;
+		--pos-ok: #8bcb9b;
+		--pos-ok-bg: #1b3323;
+		--pos-warn: #f2b65e;
+		--pos-warn-bg: #3a2a12;
+		--pos-err: #ff8a7e;
+		--pos-err-bg: #3b1713;
+		--pos-danger: #ff8a7e;
+		--pos-scrim: rgb(0 0 0 / 0.6);
+	}
+}
+
+:root {
+	color-scheme: light dark;
+	font-family: var(--pos-font-body);
+	background: var(--pos-page);
+	color: var(--pos-ink);
+	font-synthesis: none;
+	text-rendering: optimizeLegibility;
+}
+
+html {
+	min-width: 320px;
+	min-height: 100%;
+	overflow-x: hidden;
+	-webkit-text-size-adjust: 100%;
+}
+
+body {
+	margin: 0;
+	min-width: 320px;
+	min-height: 100vh;
+	min-height: 100dvh;
+	overflow-x: hidden;
+	overscroll-behavior: none;
+	-webkit-tap-highlight-color: transparent;
+}
+
+#app {
+	min-height: 100dvh;
+}
+
+button,
+input,
+textarea {
+	font: inherit;
+}
+
+button,
+a,
+[role='button'] {
+	touch-action: manipulation;
+	user-select: none;
+	-webkit-user-select: none;
+}
+
+/* Kiosk scroll without desktop scrollbar chrome. */
+.scrollbar-none {
+	scrollbar-width: none;
+	-ms-overflow-style: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+	display: none;
+}
+
+@media print {
+	:root,
+	body {
+		background: white;
+		color: black;
+	}
+
+	.no-print {
+		display: none !important;
+	}
+}
+
+/* A receipt prints on 58 mm thermal paper. ReceiptScreen adds .printing to
+   <body> before the print dialog opens, measures the receipt in this layout
+   and sizes the page to it, so a roll printer feeds exactly the receipt.
+   Thermal heads print black dots only: no greys, no fills, no thin type. */
+/* The page is narrower than the screen minimum, which would make the
+   browser shrink the receipt to fit. */
+html:has(body.printing),
+body.printing,
+body.printing #app {
+	min-width: 0;
+	min-height: 0;
+}
+
+body.printing .receipt-screen {
+	display: block;
+	height: auto;
+	max-width: none;
+	margin: 0;
+	padding: 0;
+}
+
+body.printing .receipt-scroll {
+	overflow: visible;
+}
+
+body.printing .receipt-paper,
+body.printing .receipt-paper * {
+	color: black !important;
+	background: transparent !important;
+	border-color: black !important;
+}
+
+body.printing .receipt-paper {
+	box-sizing: border-box;
+	width: 58mm;
+	margin: 0;
+	padding: 2mm 4mm 6mm;
+	gap: 2.5mm;
+	border-radius: 0;
+	font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+	font-size: 9pt;
+	font-weight: 500;
+	line-height: 1.3;
+}
+
+body.printing .receipt-paper .receipt-store {
+	font-size: 12pt;
+	font-weight: 800;
+}
+
+body.printing .receipt-paper .receipt-total {
+	font-size: 12pt;
+	font-weight: 800;
+}
+
+body.printing .receipt-paper .receipt-small {
+	font-size: 8pt;
+}
+
+body.printing .receipt-paper .receipt-chip {
+	height: auto;
+	padding: 0.5mm 2mm;
+	border: 1px solid black;
+	font-size: 8pt;
+	font-weight: 800;
+	text-transform: uppercase;
+}
+
+.receipt-print-only,
+body.printing .receipt-screen-only {
+	display: none;
+}
+
+body.printing .receipt-print-only {
+	display: inline;
+}
+
+body.printing .receipt-paper dl {
+	gap: 1.2mm;
+}
+
+body.printing .receipt-paper dd {
+	white-space: nowrap;
+}
