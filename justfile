@@ -16,6 +16,7 @@ export BITCOIND_SNAPSHOT_DIR := JUSTFILE_DIR / "test" / "_bitcoind_snapshot"
 NEXTEST_PROFILE := env("NEXTEST_PROFILE", "default")
 
 SERVER_SQL_SCHEMA_PATH := "server/schema.sql"
+POSD_SQL_SCHEMA_PATH := "pos/schema.sql"
 BARK_SQL_SCHEMA_PATH := "bark/schema.sql"
 BARK_OPENAPI_SCHEMA_PATH := "bark-rest/openapi.json"
 BARK_REST_CLIENT_DIR := "bark-rest-client"
@@ -61,7 +62,7 @@ check-fuzz:
 	cargo check --manifest-path fuzz/Cargo.toml
 
 check-release:
-	cargo check --release -p bark-cli -p bark-server
+	cargo check --release -p bark-cli -p bark-server -p bark-pos
 
 check-bark-as-libs:
 	cargo check -p ark-lib
@@ -244,8 +245,26 @@ alias int-tor := test-integration-tor
 # run integration tests for core and server test files only
 test-integration-core: ensure-build-bins docker-pull
 	cargo nextest run --no-fail-fast --profile {{NEXTEST_PROFILE}} --package ark-testing \
-		--test core --test server
+		--test core --test server --test pos
 alias int-core := test-integration-core
+
+# Run the point-of-sale service tests. posd runs inside the test process.
+test-integration-pos: ensure-build-bins docker-pull
+	cargo nextest run --no-fail-fast --profile {{NEXTEST_PROFILE}} --package ark-testing \
+		--test pos
+alias int-pos := test-integration-pos
+
+# Regenerate pos/openapi.json from the posd handlers. A unit test fails while it is stale.
+dump-posd-openapi:
+	UPDATE_OPENAPI=1 cargo test -p bark-pos --lib openapi_is_current
+
+# Build the terminal PWA that posd embeds. Rebuild posd afterwards.
+build-pos-web:
+	cd pos/web && npm ci && npm run build
+
+# Type-check, test and build the terminal PWA.
+test-pos-web:
+	cd pos/web && npm ci && npm run check && npm test && npm run build
 
 test-integration-prebuilt TEST="": docker-pull
 	cargo nextest run --archive-file {{CARGO_TARGET}}/ci/integration-tests.tar.zst {{TEST}}
@@ -253,6 +272,10 @@ test-integration-prebuilt TEST="": docker-pull
 test-integration-bark-prebuilt: docker-pull
 	cargo nextest run --archive-file {{CARGO_TARGET}}/ci/integration-tests.tar.zst \
 		-E 'binary(=bark-legacy-compat) + binary(=bark-legacy-non-compat) + binary(=barkd-compat) + binary(=barkd-non-compat)'
+
+test-integration-pos-prebuilt: docker-pull
+	cargo nextest run --archive-file {{CARGO_TARGET}}/ci/integration-tests.tar.zst \
+		-E 'binary(=pos)'
 
 # run the tests that also run against older bark releases
 test-integration-compat-prebuilt: docker-pull
@@ -265,7 +288,7 @@ test-integration-bark-sdk-prebuilt: docker-pull
 
 test-integration-core-prebuilt: docker-pull
 	cargo nextest run --archive-file {{CARGO_TARGET}}/ci/integration-tests.tar.zst \
-		-E 'binary(core) + binary(server)'
+		-E 'binary(core) + binary(server) + binary(=pos)'
 
 test-integration-upgrade-prebuilt: docker-pull
 	cargo nextest run --archive-file {{CARGO_TARGET}}/ci/integration-tests.tar.zst \
@@ -365,6 +388,7 @@ rustdocs-internal:
 # cleans most of our crates, doesn't clean grpc gens, they are sometimes slow to build
 clean:
 	cargo clean \
+		-p bark-pos \
 		-p ark-lib \
 		-p ark-testing \
 		-p bark-bitcoin-ext \
@@ -396,6 +420,17 @@ dump-server-sql-schema: ensure-build-examples
 			&& mv {{SERVER_SQL_SCHEMA_PATH}}.tmp {{SERVER_SQL_SCHEMA_PATH}}
 	echo "bark-server SQL schema written to {{SERVER_SQL_SCHEMA_PATH}}"
 	chmod 644 bark/schema.sql
+
+# Write posd's full database schema to pos/schema.sql, from its migrations.
+dump-posd-sql-schema: ensure-build-examples
+	{{EXAMPLES_DIR}}/dump-posd-postgres-schema > {{POSD_SQL_SCHEMA_PATH}}
+	sed '/^-- Dumped by .*$/d' {{POSD_SQL_SCHEMA_PATH}} \
+		| sed '/^-- Dumped from .*$/d' \
+		| sed '/^\\restrict.*$/d' \
+		| sed '/^\\unrestrict.*$/d' > {{POSD_SQL_SCHEMA_PATH}}.tmp \
+			&& mv {{POSD_SQL_SCHEMA_PATH}}.tmp {{POSD_SQL_SCHEMA_PATH}}
+	chmod 644 {{POSD_SQL_SCHEMA_PATH}}
+	echo "posd SQL schema written to {{POSD_SQL_SCHEMA_PATH}}"
 
 dump-bark-sql-schema: ensure-build-examples
 	{{EXAMPLES_DIR}}/dump-sqlite-schema > {{BARK_SQL_SCHEMA_PATH}}
@@ -504,7 +539,7 @@ update-allowed-bark-versions:
 	total=$(wc -l <<<"$sorted")
 	echo "added $cur → $target ($total entries total)"
 
-generate-static-files: update-allowed-bark-versions dump-server-sql-schema dump-bark-sql-schema generate-bark-rest-client
+generate-static-files: update-allowed-bark-versions dump-server-sql-schema dump-bark-sql-schema dump-posd-sql-schema generate-bark-rest-client
 
 # Bump lockstep-group Cargo.toml versions to NEW_VERSION (idempotent).
 bump-workspace-versions NEW_VERSION:

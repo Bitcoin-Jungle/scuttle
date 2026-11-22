@@ -1,0 +1,16 @@
+- Add posd, a point-of-sale and Lightning address service with a terminal web app
+  Staff pair a phone or tablet with a store through a single-use link and
+  take payments by Lightning and on-chain. Every payment goes to the store
+  owner's wallet, which does not need to be online: posd holds no bitcoin
+  and terminals cannot send. A wallet on the same Ark server pays the
+  Lightning invoice inside the Ark, at the server's intra-Ark fees. Owners
+  register a store by signing with their Ark key, so no wallet code is
+  specific to the point of sale. Stores also get a Lightning address, sales
+  history and CSV export.
+  [#24](https://github.com/SatoshiPortal/scuttle/pull/24)
+  - Brands are configuration: one posd serves several, each on its own
+    domain, with its own look from a directory of CSS, marks and icons.
+  - The bitcoin price comes from the Bull Bitcoin API, any JSON price API,
+    or a fixed price on test networks.
+  - The HTTP API is described by a generated OpenAPI document,
+    `pos/openapi.json`.
