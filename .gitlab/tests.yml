@@ -148,6 +148,7 @@ compare-static-files:
     - bash contrib/ci-env/ci.sh bash -c "just generate-static-files"
     - bash contrib/check-clean-diff.sh bark/schema.sql
     - bash contrib/check-clean-diff.sh server/schema.sql
+    - bash contrib/check-clean-diff.sh pos/schema.sql
     - bash contrib/check-clean-diff.sh bark-rest/openapi.json
     - bash contrib/check-clean-diff.sh bark-rest-client/
 
@@ -161,6 +162,16 @@ test-unit:
   script:
     - git log --oneline -1
     - bash contrib/ci-env/ci.sh bash -c "just test-unit-prebuilt"
+
+# posd's terminal web app: type check, unit tests and the production build.
+pos-web:
+  interruptible: true
+  stage: test
+  extends: .test-rules-no-tags
+  needs:
+    - prechecks
+  script:
+    - bash contrib/ci-env/ci.sh bash -c "just test-pos-web"
 
 test-doctests:
   interruptible: true
@@ -297,6 +308,8 @@ bark-esplora:
     - export BARK_CLIENT_EXEC=${CI_PROJECT_DIR}/target/ci/bark-cli
     - export BARKD_EXEC=${CI_PROJECT_DIR}/target/ci/barkd
     - bash ./contrib/ci-run-test.sh test-integration-bark-prebuilt
+    # posd's on-chain rail reads Esplora in this lane.
+    - bash ./contrib/ci-run-test.sh test-integration-pos-prebuilt
 
 bark-mempool:
   interruptible: true
