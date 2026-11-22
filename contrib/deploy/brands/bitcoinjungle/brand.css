@@ -1,0 +1,60 @@
+/* Bitcoin Jungle: deep teal on warm off-white and earthy greys, DM Sans
+   throughout, sentence case and round corners. posd serves this file after
+   the terminal's own CSS, so it sets the --pos-* tokens the terminal styles
+   itself with. */
+
+:root {
+	--pos-page: #edece1;
+	--pos-surface: #fafaf4;
+	--pos-muted: #e0dfd3;
+	--pos-line: #d3d2c5;
+	--pos-ink: #1c1c1a;
+	--pos-ink-soft: #5c5c55;
+	--pos-accent: #2f5b5a;
+	--pos-on-accent: #ffffff;
+	--pos-ok: #2b6a1e;
+	--pos-ok-bg: #dcead2;
+	--pos-warn: #8a4700;
+	--pos-warn-bg: #f6e1c6;
+	--pos-err: #b3261e;
+	--pos-err-bg: #f6d9d4;
+	--pos-danger: #b3261e;
+	--pos-confetti: #2f5b5a, #ff7e1c, #45b5a6, #ffffff;
+	--pos-paid: #2e7037;
+	--pos-paid-ink: #1f4f26;
+	--pos-scrim: rgb(20 20 15 / 0.45);
+	--pos-display-weight: 600;
+	--pos-display-boost: 1;
+	--pos-case: none;
+	--pos-tracking-display: -0.015em;
+	--pos-tracking-label: 0.01em;
+	--pos-tracking-button: 0;
+	--pos-radius-md: 14px;
+	--pos-radius-lg: 20px;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root {
+		--pos-page: #0e0e0e;
+		--pos-surface: #1b1b1b;
+		--pos-muted: #2a2a2a;
+		--pos-line: #363636;
+		--pos-ink: #f2f2ec;
+		--pos-ink-soft: #a5a59d;
+		--pos-accent: #3b7774;
+		--pos-on-accent: #ffffff;
+		--pos-ok: #8bcb72;
+		--pos-ok-bg: #1e3318;
+		--pos-warn: #f2a65a;
+		--pos-warn-bg: #3a2710;
+		--pos-err: #ff8a7e;
+		--pos-err-bg: #3b1713;
+		--pos-danger: #ff8a7e;
+		--pos-scrim: rgb(0 0 0 / 0.6);
+	}
+}
+
+/* The coin's square image has white corners. */
+.brand-mark {
+	border-radius: 9999px;
+}
