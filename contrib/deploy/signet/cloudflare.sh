@@ -12,6 +12,7 @@
 #   https://$NAME.$DOMAIN/dev/       test faucet, mining and store wallets
 #   https://$NAME-faucet.$DOMAIN/    the same, at the root
 #   https://$NAME-wallet.$DOMAIN/    bark-web, when webwallet.sh has set it up
+#   https://$NAME-exchange.$DOMAIN/  BULL's dummy exchange, when exchange.sh has set it up
 #   https://$NAME-bull.$DOMAIN/      posd for Bull Bitcoin stores
 #   https://$NAME-ark.$DOMAIN        captaind gRPC, the Ark server for wallets
 #   https://$NAME-esplora.$DOMAIN    Esplora (electrs)
@@ -36,6 +37,7 @@ ARK="$NAME-ark.$DOMAIN"
 ESPLORA="$NAME-esplora.$DOMAIN"
 FAUCET="$NAME-faucet.$DOMAIN"
 WALLET="$NAME-wallet.$DOMAIN"
+EXCHANGE="$NAME-exchange.$DOMAIN"
 TUNNEL=$(jq -r .TunnelID "$CREDENTIALS")
 TLS=/etc/scuttle/tls
 
@@ -121,6 +123,8 @@ ingress:
     service: http://127.0.0.1:3090
   - hostname: $WALLET
     service: http://127.0.0.1:8447
+  - hostname: $EXCHANGE
+    service: http://127.0.0.1:8088
   - service: http_status:404
 EOF
 sudo cloudflared tunnel --config /etc/cloudflared/config.yml ingress validate
@@ -142,7 +146,7 @@ sudo systemctl restart scuttle-cloudflared.service
 
 echo
 echo "Point DNS at the tunnel, from a machine with a cloudflared login for $DOMAIN:"
-for h in "$POS" "$BULL" "$ARK" "$ESPLORA" "$FAUCET" "$WALLET"; do echo "  cloudflared tunnel route dns $TUNNEL $h"; done
+for h in "$POS" "$BULL" "$ARK" "$ESPLORA" "$FAUCET" "$WALLET" "$EXCHANGE"; do echo "  cloudflared tunnel route dns $TUNNEL $h"; done
 echo "Then give posd its public URLs:"
 echo "  NETWORK=… PUBLIC_URL=https://$POS BULL_PUBLIC_URL=https://$BULL ./contrib/deploy/signet/setup.sh && sudo systemctl restart scuttle-posd"
 echo "Wallets: --ark https://$ARK --esplora https://$ESPLORA"
