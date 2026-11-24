@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# Sets up a private custom signet with the whole scuttle stack on one
-# Debian 13 VM: bitcoind with a 10-minute block miner, Postgres, two CLN
-# nodes, captaind, watchmand, a forwarder barkd and posd.
+# Sets up a private chain with the whole scuttle stack on one Debian 13 VM:
+# bitcoind with a block miner, Postgres, two CLN nodes, captaind, watchmand,
+# a forwarder barkd and posd. The chain is a custom signet (the default) or
+# regtest (NETWORK=regtest).
 #
 # Run as a sudo user on the VM, from a checkout whose release binaries are
 # built (target/release/{captaind,watchmand,barkd,bark,posd}). Safe to run
 # again: it keeps existing secrets, keys, chain data and databases.
 #
 #   ./contrib/deploy/signet/setup.sh
+#   NETWORK=regtest ./contrib/deploy/signet/setup.sh
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/../../.." && pwd)"
@@ -25,10 +27,22 @@ PUBLIC_URL="${PUBLIC_URL:-http://$(hostname -I | awk '{print $1}'):3080}"
 BULL_PUBLIC_URL="${BULL_PUBLIC_URL:-http://$(hostname -I | awk '{print $1}'):3080}"
 [ "$PUBLIC_URL" != "$BULL_PUBLIC_URL" ] || BULL_PUBLIC_URL="http://127.0.0.1:3080"
 
-# The block interval. Signet retargets like mainnet, so blocks must come
-# at the 10-minute target or difficulty climbs out of reach for a CPU.
-BLOCK_INTERVAL_SECS=600
-RPC_PORT=38332
+NETWORK="${NETWORK:-signet}"
+case "$NETWORK" in
+signet)
+	# Signet retargets like mainnet, so blocks must come at the 10-minute
+	# target or difficulty climbs out of reach for a CPU.
+	BLOCK_INTERVAL_SECS=600
+	RPC_PORT=38332
+	;;
+regtest)
+	# Regtest never retargets: blocks can come at any pace, and any number
+	# can be mined on demand.
+	BLOCK_INTERVAL_SECS="${BLOCK_INTERVAL_SECS:-60}"
+	RPC_PORT=18443
+	;;
+*) echo "NETWORK must be signet or regtest" >&2; exit 1 ;;
+esac
 
 log() { printf '\n== %s\n' "$*"; }
 as_scuttle() { sudo -u scuttle -H "$@"; }
@@ -46,6 +60,17 @@ done
 ELECTRS_BIN="${ELECTRS_BIN:-$HOME/electrs/target/release/electrs}"
 sudo install -m 755 "$ELECTRS_BIN" "$PREFIX/bin/electrs"
 
+log "network: $NETWORK"
+# The other scripts read the network from here. A deployment cannot change
+# its network in place: the chain, the wallets and the databases belong to it.
+if sudo test -f "$ETC/deploy.env"; then
+	deployed=$(sudo sed -n 's/^NETWORK=//p' "$ETC/deploy.env")
+	[ "$deployed" = "$NETWORK" ] || { echo "this VM runs $deployed, not $NETWORK" >&2; exit 1; }
+fi
+printf 'NETWORK=%s\nRPC_PORT=%s\n' "$NETWORK" "$RPC_PORT" | sudo tee "$ETC/deploy.env" >/dev/null
+sudo chown root:scuttle "$ETC/deploy.env"
+sudo chmod 640 "$ETC/deploy.env"
+
 log "secrets"
 if ! sudo test -f "$ETC/secrets.env"; then
 	gen() { openssl rand -hex 24; }
@@ -60,17 +85,17 @@ fi
 # shellcheck disable=SC1090
 eval "$(sudo cat "$ETC/secrets.env")"
 
-log "bitcoind (custom signet)"
-# Challenge OP_TRUE: any block with valid proof of work is valid. The node
-# does not listen for peers, so only this VM mines.
+log "bitcoind ($NETWORK)"
+# On signet, challenge OP_TRUE: any block with valid proof of work is valid.
+# The node does not listen for peers, so only this VM mines.
 sudo tee "$DATA/bitcoind/bitcoin.conf" >/dev/null <<EOF
-signet=1
+$NETWORK=1
 server=1
 txindex=1
 listen=0
 fallbackfee=0.0001
-[signet]
-signetchallenge=51
+[$NETWORK]
+$([ "$NETWORK" = signet ] && echo signetchallenge=51)
 rpcport=$RPC_PORT
 rpcbind=127.0.0.1
 rpcallowip=127.0.0.1
@@ -84,7 +109,7 @@ sudo chmod 600 "$DATA/bitcoind/bitcoin.conf"
 
 sudo tee /etc/systemd/system/scuttle-bitcoind.service >/dev/null <<EOF
 [Unit]
-Description=scuttle signet bitcoind
+Description=scuttle $NETWORK bitcoind
 After=network-online.target
 [Service]
 User=scuttle
@@ -95,40 +120,54 @@ TimeoutStopSec=120
 WantedBy=multi-user.target
 EOF
 
-sudo tee "$PREFIX/bin/signet-mine" >/dev/null <<EOF
+# bitcoin-cli for this chain, as the scuttle user.
+sudo tee "$PREFIX/bin/chain-cli" >/dev/null <<EOF
+#!/bin/sh
+exec bitcoin-cli -datadir=$DATA/bitcoind -$NETWORK "\$@"
+EOF
+sudo chmod 755 "$PREFIX/bin/chain-cli"
+
+sudo tee "$PREFIX/bin/mine" >/dev/null <<EOF
 #!/usr/bin/env bash
 # Mines N blocks (default 1) to the miner wallet.
 set -euo pipefail
-cli() { bitcoin-cli -datadir=$DATA/bitcoind -signet "\$@"; }
+cli() { $PREFIX/bin/chain-cli "\$@"; }
 cli -rpcwait loadwallet miner >/dev/null 2>&1 || cli createwallet miner >/dev/null 2>&1 || true
 addr=\$(cli -rpcwallet=miner getnewaddress)
-for i in \$(seq "\${1:-1}"); do
-	# A few fee-paying transactions in every block give bitcoind the fee
+n="\${1:-1}"
+# Signet's minimum difficulty needs about 5M hashes per block.
+if [ "\$n" -gt 6 ]; then
+	cli generatetoaddress \$((n - 6)) "\$addr" 1000000000 >/dev/null
+	n=6
+fi
+for i in \$(seq "\$n"); do
+	# A few fee-paying transactions in the last blocks give bitcoind the fee
 	# history it needs for estimatesmartfee. Lightning nodes refuse to open
 	# channels without estimates. Fails harmlessly before coinbases mature.
 	for rate in 2 3 5; do
 		cli -rpcwallet=miner -named sendtoaddress address="\$addr" amount=0.0001 fee_rate=\$rate >/dev/null 2>&1 || true
 	done
-	# Signet's minimum difficulty needs about 5M hashes per block.
 	cli generatetoaddress 1 "\$addr" 1000000000 >/dev/null
 done
 cli getblockcount
 EOF
-sudo chmod 755 "$PREFIX/bin/signet-mine"
+sudo chmod 755 "$PREFIX/bin/mine"
+# The name from before regtest support.
+[ "$NETWORK" = signet ] && sudo ln -sf mine "$PREFIX/bin/signet-mine"
 
 sudo tee /etc/systemd/system/scuttle-miner.service >/dev/null <<EOF
 [Unit]
-Description=mine one signet block
+Description=mine one $NETWORK block
 Requires=scuttle-bitcoind.service
 After=scuttle-bitcoind.service
 [Service]
 Type=oneshot
 User=scuttle
-ExecStart=$PREFIX/bin/signet-mine 1
+ExecStart=$PREFIX/bin/mine 1
 EOF
 sudo tee /etc/systemd/system/scuttle-miner.timer >/dev/null <<EOF
 [Unit]
-Description=a signet block every $BLOCK_INTERVAL_SECS seconds
+Description=a $NETWORK block every $BLOCK_INTERVAL_SECS seconds
 [Timer]
 OnActiveSec=$BLOCK_INTERVAL_SECS
 OnUnitActiveSec=$BLOCK_INTERVAL_SECS
@@ -140,9 +179,9 @@ EOF
 sudo systemctl daemon-reload
 sudo systemctl enable --now scuttle-bitcoind.service
 # Mature coinbases before anything spends them.
-height=$(as_scuttle bitcoin-cli -datadir="$DATA/bitcoind" -signet -rpcwait getblockcount)
+height=$(as_scuttle "$PREFIX/bin/chain-cli" -rpcwait getblockcount)
 if [ "$height" -lt 110 ]; then
-	as_scuttle "$PREFIX/bin/signet-mine" $((110 - height))
+	as_scuttle "$PREFIX/bin/mine" $((110 - height))
 fi
 sudo systemctl enable --now scuttle-miner.timer
 
@@ -167,7 +206,7 @@ log "CLN nodes (docker)"
 sudo docker pull -q "$CLN_IMAGE" >/dev/null
 cln_config() { # name, p2p port, grpc port, extra lines
 	sudo tee "$DATA/$1/config" >/dev/null <<EOF
-network=signet
+network=$NETWORK
 alias=scuttle-$1
 bitcoin-rpcconnect=127.0.0.1
 bitcoin-rpcport=$RPC_PORT
@@ -176,7 +215,7 @@ bitcoin-rpcpassword=$BITCOIND_RPC_PASS
 addr=0.0.0.0:$2
 grpc-port=$3
 log-level=info
-# A private signet has no fee history, so bitcoind never estimates fees.
+# A private chain has little fee history for bitcoind's estimates.
 force-feerates=2000
 $4
 EOF
@@ -191,7 +230,7 @@ After=docker.service scuttle-bitcoind.service
 ExecStartPre=-/usr/bin/docker rm -f scuttle-$1
 ExecStart=/usr/bin/docker run --rm --name scuttle-$1 --net=host --user $(id -u scuttle):$(id -g scuttle) \\
 	--mount type=bind,source=$DATA/$1,target=/data/.lightning \\
-	$CLN_IMAGE --network=signet --lightning-dir=/data/.lightning
+	$CLN_IMAGE --network=$NETWORK --lightning-dir=/data/.lightning
 ExecStop=/usr/bin/docker stop -t 60 scuttle-$1
 Restart=on-failure
 [Install]
@@ -206,7 +245,7 @@ cln_config cln-external 9745 9746 ""
 sudo systemctl daemon-reload
 sudo systemctl enable --now scuttle-cln-internal.service scuttle-cln-external.service
 for i in $(seq 1 60); do
-	sudo test -f "$DATA/cln-internal/signet/hold/ca.pem" && sudo test -f "$DATA/cln-internal/signet/ca.pem" && break
+	sudo test -f "$DATA/cln-internal/$NETWORK/hold/ca.pem" && sudo test -f "$DATA/cln-internal/$NETWORK/ca.pem" && break
 	sleep 2
 done
 
@@ -254,7 +293,7 @@ rpc_pass = "'$BITCOIND_RPC_PASS'"'
 
 sudo tee "$ETC/captaind.toml" >/dev/null <<EOF
 data_dir = "$DATA/captaind"
-network = "signet"
+network = "$NETWORK"
 expiry_payouts = true
 vtxo_lifetime = 4320
 vtxo_exit_delta = 144
@@ -273,7 +312,7 @@ rpc_rich_errors = true
 max_arkoor_fanout = 4
 sync_manager_block_poll_interval = "100ms"
 nursery_confirm_target_blocks = 6
-otel_deployment_name = "scuttle-signet"
+otel_deployment_name = "scuttle-$NETWORK"
 max_read_mailbox_items = 100
 recovery_xpub_nb_keys = 100000
 max_concurrent_xpub_recoveries = 1
@@ -303,13 +342,13 @@ max_vtxo_exit_depth = 100
 [[cln_array]]
 uri = "https://localhost:9736"
 priority = 10
-server_cert_path = "$DATA/cln-internal/signet/ca.pem"
-client_cert_path = "$DATA/cln-internal/signet/client.pem"
-client_key_path = "$DATA/cln-internal/signet/client-key.pem"
+server_cert_path = "$DATA/cln-internal/$NETWORK/ca.pem"
+client_cert_path = "$DATA/cln-internal/$NETWORK/client.pem"
+client_key_path = "$DATA/cln-internal/$NETWORK/client-key.pem"
 hold_invoice.uri = "https://localhost:9737"
-hold_invoice.server_cert_path = "$DATA/cln-internal/signet/hold/ca.pem"
-hold_invoice.client_cert_path = "$DATA/cln-internal/signet/hold/client.pem"
-hold_invoice.client_key_path = "$DATA/cln-internal/signet/hold/client-key.pem"
+hold_invoice.server_cert_path = "$DATA/cln-internal/$NETWORK/hold/ca.pem"
+hold_invoice.client_cert_path = "$DATA/cln-internal/$NETWORK/hold/client.pem"
+hold_invoice.client_key_path = "$DATA/cln-internal/$NETWORK/hold/client-key.pem"
 
 $fees
 
@@ -337,7 +376,8 @@ $(pg_section captaind "$PG_CAPTAIND_PASS" captaind)
 $btc_section
 EOF
 
-# Keep the configured destination. A fresh signet uses the miner's wallet.
+# Swept funds go back to the miner's wallet: this is a test network.
+# Keep the configured destination. A fresh deployment uses the miner's wallet.
 sweep_setting=
 if sudo test -f "$ETC/watchmand.toml"; then
 	sweep_setting=$(sudo python3 - "$ETC/watchmand.toml" <<'PY'
@@ -356,16 +396,16 @@ PY
 	)
 fi
 if [ -z "$sweep_setting" ]; then
-	addr=$(as_scuttle bitcoin-cli -datadir="$DATA/bitcoind" -signet -rpcwallet=miner getnewaddress sweep)
+	addr=$(as_scuttle "$PREFIX/bin/chain-cli" -rpcwallet=miner getnewaddress sweep)
 	sweep_setting="sweep_address = \"$addr\""
 fi
 sudo tee "$ETC/watchmand.toml" >/dev/null <<EOF
 data_dir = "$DATA/watchmand"
-network = "signet"
+network = "$NETWORK"
 sync_manager_block_poll_interval = "100ms"
 htlc_settlement_poll_interval = "60s"
 min_trusted_confs = 1
-otel_deployment_name = "scuttle-signet"
+otel_deployment_name = "scuttle-$NETWORK"
 admin_address = "127.0.0.1:4536"
 $sweep_setting
 
@@ -432,7 +472,7 @@ BARKD_TOKEN=$(sudo cat "$DATA/barkd/auth_token")
 if ! sudo test -f "$DATA/barkd/db.sqlite"; then
 	curl -sf -X POST http://127.0.0.1:3000/api/v1/wallet/create \
 		-H "Authorization: Bearer $BARKD_TOKEN" -H 'Content-Type: application/json' \
-		-d "{\"ark_server\": \"http://127.0.0.1:3535\", \"network\": \"signet\",
+		-d "{\"ark_server\": \"http://127.0.0.1:3535\", \"network\": \"$NETWORK\",
 			\"chain_source\": {\"bitcoind\": {\"bitcoind\": \"http://127.0.0.1:$RPC_PORT\",
 			\"bitcoind_auth\": {\"user-pass\": {\"user\": \"scuttle\", \"pass\": \"$BITCOIND_RPC_PASS\"}}}}}" \
 		>/dev/null
@@ -445,7 +485,7 @@ for brand in bitcoinjungle bullbitcoin; do
 	sudo install -o root -g scuttle -m 640 "$REPO/contrib/deploy/brands/$brand"/* "$ETC/brands/$brand/"
 done
 sudo tee "$ETC/posd.toml" >/dev/null <<EOF
-network = "signet"
+network = "$NETWORK"
 ark_server_url = "http://127.0.0.1:3535"
 
 [http]
@@ -480,7 +520,7 @@ rpc_password = "$BITCOIND_RPC_PASS"
 wallet = "posd"
 
 [price]
-# Signet coins have no price; a fixed one keeps the fiat keypad working.
+# Test coins have no price; a fixed one keeps the fiat keypad working.
 source = "fixed"
 fixed_btc_price = "62500000.00"
 currencies = { USD = 2, CAD = 2, MXN = 2, CRC = 2, EUR = 2, ARS = 2, AUD = 2, COP = 0 }
@@ -494,8 +534,8 @@ sudo systemctl enable --now scuttle-posd.service
 
 log "electrs (Esplora API)"
 # A custom signet has its own network magic, which electrs cannot read from
-# bitcoind's block files, so it imports blocks over RPC.
-unit electrs "Esplora API" "$PREFIX/bin/electrs --network signet --jsonrpc-import \
+# bitcoind's block files, so it imports blocks over RPC (on regtest too).
+unit electrs "Esplora API" "$PREFIX/bin/electrs --network $NETWORK --jsonrpc-import \
 	--db-dir $DATA/electrs --daemon-dir $DATA/bitcoind --daemon-rpc-addr 127.0.0.1:$RPC_PORT \
 	--cookie scuttle:$BITCOIND_RPC_PASS --http-addr 127.0.0.1:3002 \
 	--electrum-rpc-addr 127.0.0.1:50001 --monitoring-addr 127.0.0.1:4224 --cors *" \

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Funds a fresh signet deployment from the miner's coinbases:
+# Funds a fresh deployment from the miner's coinbases:
 # - captaind's rounds wallet (VTXO pool and rounds) and watchman wallet;
 # - the external CLN node, which then opens a channel to the Ark server's
 #   node and pushes half of it across, so both sides can pay.
 #
-# Mining continues at 10-minute blocks, so this script mines the
-# confirmations it needs itself. Run it once after setup.sh.
+# The miner timer is slow, so this script mines the confirmations it
+# needs itself. Run it once after setup.sh.
 set -euo pipefail
 
 DATA=/var/lib/scuttle
@@ -15,9 +15,10 @@ WATCHMAN_BTC="${WATCHMAN_BTC:-1}"
 CLN_BTC="${CLN_BTC:-5}"
 CHANNEL_SAT="${CHANNEL_SAT:-200000000}"
 
-cli() { sudo -u scuttle bitcoin-cli -datadir="$DATA/bitcoind" -signet "$@"; }
-mine() { sudo -u scuttle "$PREFIX/bin/signet-mine" "$1" >/dev/null; }
-lncli() { sudo docker exec "scuttle-$1" lightning-cli --network=signet --lightning-dir=/data/.lightning "${@:2}"; }
+eval "$(sudo cat /etc/scuttle/deploy.env)"   # NETWORK, RPC_PORT
+cli() { sudo -u scuttle "$PREFIX/bin/chain-cli" "$@"; }
+mine() { sudo -u scuttle "$PREFIX/bin/mine" "$1" >/dev/null; }
+lncli() { sudo docker exec "scuttle-$1" lightning-cli --network="$NETWORK" --lightning-dir=/data/.lightning "${@:2}"; }
 
 # Coinbases need 100 confirmations. Mine until the miner can pay for all.
 need=$(awk "BEGIN{print $ROUNDS_BTC + $WATCHMAN_BTC + $CLN_BTC + 1}")

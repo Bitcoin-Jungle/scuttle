@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end check of a signet deployment. It registers a store from a bark
+# End-to-end check of a deployment. It registers a store from a bark
 # wallet, pairs a terminal, and has two sales paid: one by the external
 # Lightning node and one by a second bark wallet of the same Ark server,
 # which pays inside the Ark for free. The owner's wallet stays closed while
@@ -16,9 +16,10 @@ WORK="$HOME/smoke"
 mkdir -p "$WORK"
 eval "$(sudo cat /etc/scuttle/secrets.env)"
 
-cli() { sudo -u scuttle bitcoin-cli -datadir="$DATA/bitcoind" -signet "$@"; }
-mine() { sudo -u scuttle "$PREFIX/bin/signet-mine" "$1" >/dev/null; }
-lncli() { sudo docker exec "scuttle-$1" lightning-cli --network=signet --lightning-dir=/data/.lightning "${@:2}"; }
+eval "$(sudo cat /etc/scuttle/deploy.env)"   # NETWORK, RPC_PORT
+cli() { sudo -u scuttle "$PREFIX/bin/chain-cli" "$@"; }
+mine() { sudo -u scuttle "$PREFIX/bin/mine" "$1" >/dev/null; }
+lncli() { sudo docker exec "scuttle-$1" lightning-cli --network="$NETWORK" --lightning-dir=/data/.lightning "${@:2}"; }
 bark() { local w=$1; shift; "$PREFIX/bin/bark" --datadir "$WORK/$w" -q "$@" 2>/dev/null; }
 api() { # method path [token] [json]
 	curl -sf -X "$1" "$POSD$2" ${3:+-H "Authorization: Bearer $3"} \
@@ -26,8 +27,8 @@ api() { # method path [token] [json]
 }
 new_wallet() {
 	[ -d "$WORK/$1" ] && return
-	"$PREFIX/bin/bark" create --datadir "$WORK/$1" --signet --ark http://127.0.0.1:3535 \
-		--bitcoind http://127.0.0.1:38332 --bitcoind-user scuttle --bitcoind-pass "$BITCOIND_RPC_PASS" \
+	"$PREFIX/bin/bark" create --datadir "$WORK/$1" --"$NETWORK" --ark http://127.0.0.1:3535 \
+		--bitcoind "http://127.0.0.1:$RPC_PORT" --bitcoind-user scuttle --bitcoind-pass "$BITCOIND_RPC_PASS" \
 		>/dev/null 2>&1
 }
 wait_state() { # token id state
