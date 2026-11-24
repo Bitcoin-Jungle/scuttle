@@ -23,8 +23,6 @@ use crate::error::{ApiError, ApiResult, LnurlError, LnurlErrorBody, bad_request,
 use crate::sales::{self, SaleAmount};
 
 
-const MIN_SENDABLE_MSAT: u64 = 1_000;
-
 /// The most unpaid Lightning address invoices a store has open at once.
 /// Asking for invoices needs no credentials, and the watcher checks every
 /// open one, so the caps keep a flood from slowing every terminal.
@@ -137,10 +135,11 @@ pub async fn pay_request(
 	Path(name): Path<String>,
 ) -> Result<Json<PayRequest>, LnurlError> {
 	let (store, brand) = store_by_name(&app, &headers, &name).await?;
+	let min = sales::min_sale_amount(&app).await?;
 	Ok(Json(PayRequest {
 		tag: "payRequest",
 		callback: brand.url(&format!("/api/v1/lnurlp/{}/callback", name)),
-		min_sendable: MIN_SENDABLE_MSAT,
+		min_sendable: min.to_sat() * 1000,
 		max_sendable: app.cfg.sales.lnurl_max_sat * 1000,
 		metadata: metadata(&store, &brand, &name),
 	}))
@@ -182,7 +181,8 @@ pub async fn callback(
 	Query(q): Query<CallbackQuery>,
 ) -> Result<Json<CallbackResponse>, LnurlError> {
 	let (store, _) = store_by_name(&app, &headers, &name).await?;
-	if q.amount < MIN_SENDABLE_MSAT || q.amount > app.cfg.sales.lnurl_max_sat * 1000 {
+	let min = sales::min_sale_amount(&app).await?;
+	if q.amount < min.to_sat() * 1000 || q.amount > app.cfg.sales.lnurl_max_sat * 1000 {
 		return Err(bad_request("the amount is out of range").into());
 	}
 	if q.amount % 1000 != 0 {

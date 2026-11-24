@@ -264,6 +264,25 @@ async fn pos_sale_waits_for_an_arriving_lightning_payment() {
 	assert_eq!(paid["paid_rail"], "lightning");
 }
 
+/// The smallest sale leaves 1 sat after the Lightning receive fee: a smaller
+/// one is refused, and a payment of the smallest one reaches the owner.
+#[tokio::test]
+async fn pos_smallest_sale_is_paid() {
+	let ctx = TestContext::new("pos/pos_smallest_sale_is_paid").await;
+	let store = store_setup(&ctx).await;
+	let min = LIGHTNING_RECEIVE_FEE + sat(1);
+
+	let (status, body) = store.posd.call(Method::POST, "/api/v1/sales", Some(&store.till),
+		Some(json!({ "amount_sat": (min - sat(1)).to_sat() }))).await;
+	assert_eq!(status, StatusCode::BAD_REQUEST, "{}", body);
+
+	let sale = new_sale(&store, json!({ "amount_sat": min.to_sat() })).await;
+	store.lightning.external.pay_bolt11(sale["lightning_invoice"].as_str().unwrap()).await;
+	let paid = store.posd.wait_sale_state(&store.till, sale["id"].as_str().unwrap(), "paid", SALE_TIMEOUT).await;
+	assert_eq!(paid["paid_rail"], "lightning");
+	owner_comes_back(&ctx, &store, sat(1)).await;
+}
+
 /// A sale request repeated with its Idempotency-Key, as a terminal does after
 /// losing the response, returns the first sale instead of a second one.
 #[tokio::test]
@@ -446,6 +465,8 @@ async fn pos_pairing_and_lightning_address() {
 	let (status, pay_request) = get(&format!("{}/.well-known/lnurlp/cafe", beta)).await;
 	assert_eq!(status, StatusCode::OK);
 	assert_eq!(pay_request["tag"], "payRequest");
+	// The smallest payment leaves 1 sat after the Lightning receive fee.
+	assert_eq!(pay_request["minSendable"], (LIGHTNING_RECEIVE_FEE + sat(1)).to_sat() * 1000);
 	let metadata: Value = serde_json::from_str(pay_request["metadata"].as_str().unwrap()).unwrap();
 	assert_eq!(metadata[1], json!(["text/identifier", format!("cafe@{}", beta_host)]));
 	let (status, _) = get(&format!("{}/.well-known/lnurlp/cafe", alpha)).await;

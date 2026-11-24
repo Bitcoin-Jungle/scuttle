@@ -8,6 +8,8 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use tokio_postgres::GenericClient;
 
+use ark::fees::LightningReceiveFees;
+
 use crate::App;
 use crate::database::{Rail, SALE_SELECT, Sale, SaleState, Store};
 use crate::error::{ApiError, ApiResult, bad_request, conflict, not_found};
@@ -21,6 +23,31 @@ pub const MAX_MEMO_CHARS: usize = 200;
 /// The most derivation indexes a sale skips past addresses that are in use,
 /// before it goes without an on-chain address.
 const MAX_ADDRESS_SKIPS: usize = 50;
+
+/// The smallest amount barkd makes a Lightning invoice for under the Ark
+/// server's Lightning receive fee: it refuses one that leaves nothing after
+/// the fee. `None` if no amount does.
+pub fn min_lightning_amount(fees: &LightningReceiveFees) -> Option<Amount> {
+	// What is left after the fee never shrinks as the amount grows, so a
+	// binary search finds the smallest amount above its own fee.
+	let pays = |sat: u64| fees.calculate(Amount::from_sat(sat)).is_some_and(|fee| fee.to_sat() < sat);
+	if !pays(MAX_SAT) {
+		return None;
+	}
+	let (mut low, mut high) = (0, MAX_SAT);
+	while high - low > 1 {
+		let mid = low + (high - low) / 2;
+		if pays(mid) { high = mid } else { low = mid }
+	}
+	Some(Amount::from_sat(high))
+}
+
+/// The smallest amount of a sale: every sale has a Lightning invoice.
+pub async fn min_sale_amount(app: &App) -> ApiResult<Amount> {
+	let fees = app.ark.ark_info().await.fees.lightning_receive;
+	min_lightning_amount(&fees)
+		.ok_or_else(|| ApiError::Upstream(anyhow::anyhow!("the Ark server's Lightning receive fee leaves nothing")))
+}
 
 /// The amount a sale is created for.
 #[derive(Debug, Clone)]
@@ -194,8 +221,9 @@ pub async fn create_sale(
 			(sat, Some((fiat, quote.btc_price)))
 		},
 	};
-	if amount_sat == Amount::ZERO {
-		return Err(bad_request("the amount must be at least 1 sat"));
+	let min = min_sale_amount(app).await?;
+	if amount_sat < min {
+		return Err(bad_request(format!("the amount must be at least {} sat", min.to_sat())));
 	}
 	if amount_sat.to_sat() > MAX_SAT {
 		return Err(bad_request("the amount is more than 21 million bitcoin"));
@@ -388,6 +416,26 @@ fn csv_field(s: &str) -> String {
 
 #[cfg(test)]
 mod test {
+	use ark::fees::PpmFeeRate;
+
+	#[test]
+	fn min_lightning_amount_leaves_something_after_the_fee() {
+		let fees = |base: u64, ppm: u64| LightningReceiveFees { base_fee: Amount::from_sat(base), ppm: PpmFeeRate(ppm) };
+		assert_eq!(min_lightning_amount(&fees(0, 0)), Some(Amount::from_sat(1)));
+		// 0.2% of 1 sat rounds up to 1 sat, which leaves nothing.
+		assert_eq!(min_lightning_amount(&fees(0, 2_000)), Some(Amount::from_sat(2)));
+		assert_eq!(min_lightning_amount(&fees(100, 0)), Some(Amount::from_sat(101)));
+		assert_eq!(min_lightning_amount(&fees(100, 10_000)), Some(Amount::from_sat(103)));
+		assert_eq!(min_lightning_amount(&fees(0, 1_000_000)), None);
+		// At 99.9% the fee leaves a whole sat only from 8,000 sats on.
+		assert_eq!(min_lightning_amount(&fees(7, 999_000)), Some(Amount::from_sat(8_000)));
+		for (base, ppm) in [(0, 2_000), (100, 0), (100, 10_000), (7, 999_000)] {
+			let fees = fees(base, ppm);
+			let min = min_lightning_amount(&fees).unwrap();
+			assert!(min > fees.calculate(min).unwrap());
+			assert!(min - Amount::ONE_SAT <= fees.calculate(min - Amount::ONE_SAT).unwrap());
+		}
+	}
 	use super::*;
 
 	#[test]
