@@ -77,7 +77,7 @@ async fn assert_vtxopool_consistency(srv: &Captaind) {
 }
 
 /// The HTLC-send vtxos `client` holds for `payment_hash`.
-async fn htlc_send_vtxo_ids(
+pub(crate) async fn htlc_send_vtxo_ids(
 	client: &Wallet,
 	payment_hash: ark::lightning::PaymentHash,
 ) -> Vec<ark::VtxoId> {
@@ -563,6 +563,7 @@ async fn intra_ark_granted_receive_canceled_after_htlc_recv_expiry() {
 	let status = srv.get_public_rpc().await.check_lightning_payment(protos::CheckLightningPaymentRequest {
 		hash: payment_hash.to_vec(),
 		wait: true,
+		htlc_vtxo_ids: Vec::new(),
 	}).wait_millis(30_000).await.expect("check_lightning_payment failed").into_inner();
 	assert!(
 		matches!(status.payment_status, Some(protos::lightning_payment_status::PaymentStatus::Failed(_))),
@@ -804,6 +805,8 @@ impl RawHtlcSend {
 	async fn initiate(&self, srv: &Captaind, invoice: &str, amount: Amount) -> Result<(), tonic::Status> {
 		let mut srv_rpc = srv.get_public_rpc().await;
 		srv_rpc.initiate_lightning_payment(protos::InitiateLightningPaymentRequest {
+			intent_nonce: None,
+			source_owner_signature: Vec::new(),
 			invoice: invoice.to_string(),
 			htlc_vtxo_ids: self.vtxos.iter().map(|v| v.id().to_bytes().to_vec()).collect(),
 			payment_amount_sat: amount.to_sat(),
@@ -3381,7 +3384,7 @@ async fn refuse_send_with_unlock_hash_as_payment_hash() {
 }
 
 /// The `status` of the `lightning_htlc_subscription` row for `payment_hash`.
-async fn lightning_subscription_status(
+pub(crate) async fn lightning_subscription_status(
 	db: &Db,
 	payment_hash: ark::lightning::PaymentHash,
 ) -> Option<String> {
@@ -3433,7 +3436,7 @@ async fn cln_hold_status(
 }
 
 /// Whether a settlement (preimage) for `payment_hash` was recorded.
-async fn is_preimage_recorded(
+pub(crate) async fn is_preimage_recorded(
 	db: &Db,
 	payment_hash: ark::lightning::PaymentHash,
 ) -> bool {
@@ -3446,7 +3449,7 @@ async fn is_preimage_recorded(
 }
 
 /// Waits until the server's htlc subscription for `payment_hash` reaches `status`.
-async fn wait_for_subscription_status(
+pub(crate) async fn wait_for_subscription_status(
 	db: &Db,
 	payment_hash: ark::lightning::PaymentHash,
 	status: &str,
@@ -3578,7 +3581,7 @@ async fn successful_xpay_records_the_preimage() {
 	}.wait(wait_timeout()).await;
 }
 
-async fn wait_for_hold_invoice_accepted(
+pub(crate) async fn wait_for_hold_invoice_accepted(
 	hold_client: &mut hold::hold_client::HoldClient<tonic::transport::Channel>,
 	payment_hash: ark::lightning::PaymentHash,
 ) {
@@ -3822,6 +3825,8 @@ async fn self_payment_claim_rejected_after_sender_onchain_refund() {
 	wallet.register_vtxo_transactions_with_server(&htlcs).await.unwrap();
 
 	rpc.initiate_lightning_payment(protos::InitiateLightningPaymentRequest {
+		intent_nonce: None,
+		source_owner_signature: Vec::new(),
 		invoice,
 		payment_amount_sat: 100_000,
 		htlc_vtxo_ids: htlcs.iter().map(|v| v.id().to_bytes().to_vec()).collect(),
@@ -4004,7 +4009,7 @@ async fn late_xpay_result_does_not_finalize_a_retry() {
 	let retry_id = db.write(async |t| {
 		let retry_id = t.store_lightning_payment_start(
 			first.lightning_node_id, &invoice, sat(10_000), None, &[], None,
-			first.block_height.unwrap(), sat(0), None, Duration::from_secs(3600), Some(sat(1_000)),
+			first.block_height.unwrap(), sat(0), None, Duration::from_secs(3600), Some(sat(1_000)), None,
 		).await?;
 		xpay::create_xpay(&**t, &xpay::NewClnXpay {
 			lightning_node_id: first.lightning_node_id,

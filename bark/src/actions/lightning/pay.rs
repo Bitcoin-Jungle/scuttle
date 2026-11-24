@@ -623,6 +623,8 @@ async fn initiate_lightning_send_payment(
 	let (mut srv, _) = wallet.require_server().await.retry()?;
 
 	let req = protos::InitiateLightningPaymentRequest {
+		intent_nonce: None,
+		source_owner_signature: Vec::new(),
 		invoice: send.invoice.to_string(),
 		htlc_vtxo_ids: htlcs.vtxo_ids.iter().map(|v| v.to_bytes().to_vec()).collect(),
 		payment_amount_sat: send.payment_amount.to_sat(),
@@ -651,6 +653,7 @@ async fn check_lightning_send_payment_status(
 	let pending_status = if expired { PaymentStatus::Failed } else { PaymentStatus::Pending };
 
 	let req = protos::CheckLightningPaymentRequest {
+		htlc_vtxo_ids: Vec::new(),
 		hash: payment_hash.to_vec(),
 		wait: false,
 	};
