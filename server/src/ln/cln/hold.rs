@@ -316,7 +316,7 @@ impl ClnHoldProcess {
 					let watchman_tip = t.get_highest_block(BlockTable::Watchmand).await?.map(|b| b.height);
 					Ok((htlc_vtxos, watchman_tip))
 				}).await?;
-				if htlc_recvs_expired(&htlc_vtxos, tip, watchman_tip) {
+				if htlc_recvs_expired(self.db.expiry_payouts(), &htlc_vtxos, tip, watchman_tip) {
 					return Ok(Some("htlc-recv vtxos expired"));
 				}
 

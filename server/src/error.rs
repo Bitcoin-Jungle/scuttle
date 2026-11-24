@@ -6,6 +6,7 @@ use std::error::Error as StdError;
 use anyhow::Context;
 
 use ark::VtxoId;
+use ark::tree::signed::UnlockHash;
 
 /// An error type to add context to anyhow to indicate any form
 /// of incorrect user input.
@@ -410,5 +411,39 @@ mod test {
 		let status = result.to_status().unwrap_err();
 
 		assert_eq!(status.code(), tonic::Code::NotFound);
+	}
+}
+
+/// A refusal caused by an expiry payout. The RPC server sends its reason and
+/// identifier to the client in metadata, so that the client can act on it.
+#[derive(Debug, Clone, Copy, thiserror::Error)]
+pub enum ExpiryPayoutRefusal {
+	/// The VTXO is decided for an expiry payout.
+	#[error("vtxo {0} is decided for an expiry payout")]
+	DecidedForPayout(VtxoId),
+	/// The VTXO is in an expired tree, so a new lightning send cannot use it.
+	#[error("vtxo {0} is in an expired tree and cannot fund a new lightning send")]
+	ExpiredNewLightning(VtxoId),
+	/// An expiry payout cancelled the round participation before it
+	/// accepted forfeits.
+	#[error("round participation {0} was cancelled for an expiry payout")]
+	RoundCancelledBeforeForfeit(UnlockHash),
+}
+
+impl ExpiryPayoutRefusal {
+	pub fn reason(&self) -> &'static str {
+		match self {
+			Self::DecidedForPayout(_) => "decided_for_payout",
+			Self::ExpiredNewLightning(_) => "expired_new_lightning",
+			Self::RoundCancelledBeforeForfeit(_) => "round_cancelled_before_forfeit",
+		}
+	}
+
+	/// The VTXO or the unlock hash of the participation that is refused.
+	pub fn identifier(&self) -> String {
+		match self {
+			Self::DecidedForPayout(id) | Self::ExpiredNewLightning(id) => id.to_string(),
+			Self::RoundCancelledBeforeForfeit(hash) => hash.to_string(),
+		}
 	}
 }
