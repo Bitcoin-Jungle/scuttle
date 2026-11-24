@@ -232,6 +232,11 @@ message GetVtxoStatusRequest {
 
 message GetVtxoStatusResponse {
 	VtxoSpendState spend_state = 1;
+	// Expiry payout mode only: the owner mailbox key of the VTXO.
+	bytes owner_mailbox = 1000;
+	// Expiry payout mode only: set when the server decided to pay out the
+	// VTXO. The spend state of the VTXO is then SPENT.
+	optional ExpiryPayout expiry_payout = 1001;
 }
 
 enum ExpiryPayoutState {
@@ -270,6 +275,9 @@ message GetVtxosStatusByIdsRequest {
 message VtxoStatus {
 	bytes vtxo_id = 1;
 	VtxoSpendState spend_state = 2;
+	// Expiry payout mode only, see GetVtxoStatusResponse.
+	bytes owner_mailbox = 1000;
+	optional ExpiryPayout expiry_payout = 1001;
 }
 
 message GetVtxosStatusByIdsResponse {
@@ -303,6 +311,8 @@ message RecoveredVtxo {
 	// xpub/derivation_index.
 	uint32 derivation_index = 2;
 	VtxoSpendState spend_state = 3;
+	// Expiry payout mode only: the owner mailbox key of the VTXO.
+	bytes owner_mailbox = 1000;
 }
 
 message RecoverVtxosByXpubResponse {
@@ -329,6 +339,8 @@ message BoardCosignRequest {
 	bytes user_pubkey = 4;
 	bytes pub_nonce = 5;
 	bytes funding_tx = 6;
+	// Expiry payout mode only: the owner mailbox key of the board VTXO.
+	optional bytes owner_mailbox = 1000;
 }
 
 message BoardCosignResponse {
@@ -356,6 +368,9 @@ message VtxoRequest {
 message ArkoorDestination {
 	uint64 total_amount = 1;
 	bytes policy = 2;
+	// Expiry payout mode only: the blinded owner mailbox of the output. The
+	// server unblinds it with the user public key of the policy.
+	bytes blinded_mailbox_id = 1000;
 }
 
 message ArkoorCosignRequest {
@@ -399,11 +414,18 @@ message InitiateLightningPaymentRequest {
 	// single attempt. Values above the server's maximum are capped to it.
 	// The server picks its default when unset.
 	optional uint32 retry_for_secs = 5;
+	// Expiry payout mode only: a nonce that makes the request unique, and
+	// the signature of the request by the key of the HTLC VTXOs. A retry
+	// must send the same request.
+	optional bytes intent_nonce = 1000;
+	bytes source_owner_signature = 1001;
 }
 
 message CheckLightningPaymentRequest {
 	bytes hash = 1;
 	bool wait = 2;
+	// Expiry payout mode only: all HTLC VTXOs of the payment.
+	repeated bytes htlc_vtxo_ids = 1000;
 }
 
 message PaymentSuccessStatus {
@@ -430,6 +452,7 @@ message FetchBolt12InvoiceResponse {
 }
 
 message StartLightningReceiveRequest {
+	reserved 1000, 1001;
 	bytes payment_hash = 1;
 	uint64 amount_sat = 2;
 	uint32 min_cltv_delta = 3;
@@ -495,6 +518,7 @@ enum LightningReceiveStatus {
 }
 
 message CheckLightningReceiveResponse {
+	reserved 5;
 	string invoice = 1;
 	uint64 amount_sat = 2;
 	LightningReceiveStatus status = 3;

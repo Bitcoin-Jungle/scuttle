@@ -46,7 +46,9 @@ use crate::database;
 use crate::database::block::BlockTable;
 use crate::database::htlc_vtxo;
 use crate::database::hold::{self as hold_db, HoldTransition};
-use crate::database::ln::{LightningNodeId, LightningHtlcSubscription, LightningHtlcSubscriptionStatus};
+use crate::database::ln::{
+	LightningNodeId, LightningHtlcSubscription, LightningHtlcSubscriptionStatus, LightningPaymentStatus,
+};
 use crate::ln::guard::{PaymentGuard, PaymentGuards};
 use crate::ln::htlc_recvs_expired;
 use crate::ln::node_manager::post_lightning_receive_notification;
@@ -645,6 +647,17 @@ impl ClnHoldProcess {
 		let node_id = self.node_id;
 		let hash = PaymentHash::from(*payment_hash);
 		let canceled = self.db.write(async |t| {
+			// A receive whose intra-Ark payment went through is owed to the
+			// receiver: canceling it would keep the sender's VTXOs and the
+			// receiver's grant both.
+			if t.expiry_payouts() {
+				let attempt = t.get_lightning_payment_attempt_by_subscription_id(htlc_subscription.id).await?;
+				if let Some(attempt) = attempt {
+					ensure!(attempt.status != LightningPaymentStatus::Succeeded,
+						"the payment funding this receive succeeded, refusing to cancel it");
+					t.ensure_not_settled(hash).await?;
+				}
+			}
 			let canceled = t.store_lightning_htlc_subscription_status(
 				htlc_subscription.id,
 				LightningHtlcSubscriptionStatus::Canceled,

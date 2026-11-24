@@ -50,7 +50,7 @@ use ark::mailbox::MailboxIdentifier;
 use uuid::Uuid;
 
 use crate::Server;
-use crate::error::ContextExt;
+use crate::error::{ContextExt, ExpiryPayoutRefusal};
 use crate::ln::cln::{ClnNodeInfo, ClnNodeOnlineState, NodeHandle};
 use crate::ln::cln::hold::ClnHoldConfig;
 use crate::ln::cln::xpay::ClnXpayConfig;
@@ -231,6 +231,7 @@ impl LightningManager {
 		user_fee: Amount,
 		attempt_block_height: BlockHeight,
 		retry_for: Duration,
+		intent_id: Option<String>,
 	) -> anyhow::Result<()> {
 		invoice.check_signature().context("invalid invoice signature")?;
 
@@ -246,7 +247,13 @@ impl LightningManager {
 			user_fee,
 			attempt_block_height,
 			retry_for,
+			intent_id.as_deref(),
 		).await {
+			// The guard refused the source before any attempt was stored, so
+			// no payment status can tell the client. It gets the error.
+			if e.is::<ExpiryPayoutRefusal>() {
+				return Err(e);
+			}
 			// The attempt is already recorded as failed and the client sees the
 			// failure via CheckLightningPayment. Benign races (someone else paid
 			// or canceled the invoice first) surface as PayInvoiceRace and
@@ -286,6 +293,7 @@ impl LightningManager {
 		user_fee: Amount,
 		attempt_block_height: BlockHeight,
 		retry_for: Duration,
+		intent_id: Option<&str>,
 	) -> anyhow::Result<()> {
 		let payment_hash = invoice.payment_hash();
 		let node = self.online_node().context("cln node is offline")?;
@@ -347,6 +355,7 @@ impl LightningManager {
 		};
 
 		let attempt_id = self.db.write(async |t| {
+			t.guard_new_lightning_inputs(htlc_vtxo_ids).await?;
 			let attempt_id = t.store_lightning_payment_start(
 				node.id, &invoice, amount, sender_mailbox_id, htlc_vtxo_ids,
 				lightning_htlc_subscription_id,
@@ -354,6 +363,7 @@ impl LightningManager {
 				// An intra-Ark payment short-circuits before xpay, so no
 				// routing budget is ever authorised for it.
 				lightning_htlc_subscription_id.is_none().then_some(max_routing_fee),
+				intent_id,
 			).await?;
 			// Same transaction as the attempt: the attempt check above is what
 			// keeps one payment per hash in flight, and the cln_xpay row must
@@ -529,15 +539,24 @@ impl LightningManager {
 	}
 
 	/// Gets the current payment status for a given payment hash.
+	///
+	/// With `htlc_vtxo_ids`, the status is that of the latest attempt these
+	/// HTLCs were committed to: another payer's attempt on the same hash says
+	/// nothing about this payer's VTXOs.
 	pub async fn get_payment_status(
 		&self,
 		payment_hash: PaymentHash,
+		htlc_vtxo_ids: &[VtxoId],
 	) -> anyhow::Result<PaymentStatus> {
 		trace!("Getting payment status for payment hash: {}", payment_hash);
 
-		let attempt = self.db.read(async |t|
+		let by_hash = htlc_vtxo_ids.is_empty() || !self.db.expiry_payouts();
+		let attempt = self.db.read(async |t| if by_hash {
 			t.get_latest_payment_attempt_by_payment_hash(payment_hash).await
-		).await?.not_found([payment_hash], "payment attempt not found")?;
+		} else {
+			Ok(t.get_latest_payment_attempt_by_htlc_vtxos(htlc_vtxo_ids).await?
+				.filter(|attempt| attempt.payment_hash == payment_hash))
+		}).await?.not_found([payment_hash], "payment attempt not found")?;
 
 		trace!("Payment attempt status for payment {}: {}",
 			payment_hash, attempt.status,
@@ -565,6 +584,7 @@ impl LightningManager {
 	pub async fn wait_payment_status(
 		&self,
 		payment_hash: PaymentHash,
+		htlc_vtxo_ids: &[VtxoId],
 	) -> anyhow::Result<PaymentStatus> {
 		trace!("Waiting for payment status for payment hash: {}", payment_hash);
 
@@ -574,7 +594,7 @@ impl LightningManager {
 		let mut poll_interval = tokio::time::interval(self.invoice_poll_interval);
 
 		loop {
-			match self.get_payment_status(payment_hash).await? {
+			match self.get_payment_status(payment_hash, htlc_vtxo_ids).await? {
 				PaymentStatus::Success(preimage) => return Ok(PaymentStatus::Success(preimage)),
 				PaymentStatus::Failed => return Ok(PaymentStatus::Failed),
 				PaymentStatus::Pending => {},

@@ -33,6 +33,7 @@ mod intman;
 pub mod ln;
 pub mod nursery;
 mod offboards;
+mod owner_mailbox;
 pub mod recovery;
 mod round;
 pub mod telemetry;
@@ -45,6 +46,7 @@ use crate::database::htlc_vtxo::{self, HtlcDirection};
 use crate::database::tree::VtxoTreeUpdate;
 pub use crate::intman::{CAPTAIND_API_KEY, CAPTAIND_CLI_API_KEY};
 pub use crate::config::Config;
+pub use crate::error::ExpiryPayoutRefusal;
 pub use bark_common::{fs_perms, secret};
 
 use std::collections::{BTreeSet, HashSet};
@@ -267,7 +269,7 @@ impl Server {
 		fs::create_dir_all(&cfg.data_dir).context("can't create dir")?;
 		fs_perms::harden(&cfg.data_dir, 0o700)?;
 
-		let db = database::Db::create(&cfg.postgres).await?;
+		let db = database::Db::create_with_payouts(&cfg.postgres, cfg.expiry_payouts).await?;
 
 		// Initiate key material.
 		let seed = {
@@ -382,6 +384,8 @@ impl Server {
 		let db = database::Db::connect(&cfg.postgres)
 			.await
 			.context("failed to connect to db")?;
+		ensure!(db.expiry_payouts() == cfg.expiry_payouts,
+			"expiry_payouts differs from the mode fixed at database creation");
 
 		let bitcoind = bcd::build_client(&cfg.bitcoind.url, cfg.bitcoind.auth())?;
 		bcd::require_network(&bitcoind, cfg.network).await?;
@@ -660,6 +664,7 @@ impl Server {
 		utxo: OutPoint,
 		funding_tx: &Transaction,
 		user_pub_nonce: PublicNonce,
+		owner_mailbox: Option<PublicKey>,
 	) -> anyhow::Result<ark::board::BoardCosignResponse> {
 		check_max_amount("board", amount, self.config.max_board_amount)?;
 
@@ -715,18 +720,38 @@ impl Server {
 		// The exit tx we cosign commits to `amount` as the funding output's
 		// value, so a funding output paying anything else yields a board
 		// that can neither be registered nor unilaterally exited.
-		let funding_value = funding_tx.output[utxo.vout as usize].value;
+		let funding_output = &funding_tx.output[utxo.vout as usize];
+		let funding_value = funding_output.value;
 		if funding_value != amount {
 			return badarg!("board amount {} does not match funding tx output value {}",
 				amount, funding_value,
 			);
 		}
 
+		let builder = BoardBuilder::new_for_cosign(
+			user_pubkey,
+			expiry_height,
+			self.server_pubkey,
+			self.config.vtxo_exit_delta,
+			amount,
+			fee,
+			utxo,
+			user_pub_nonce,
+		);
+		let spk = builder.funding_script_pubkey();
+		if self.config.expiry_payouts && spk != funding_output.script_pubkey {
+			return badarg!("board funding script does not match the funding tx output");
+		}
+
 		// validate funding tx is real
 		// check that any of the inputs is a vtxo
 		self.db.read(async |tx| {
+			// In payout mode the co-sign stores the funding transaction of a
+			// board, so a retry of the co-sign finds it.
+			let retry = self.config.expiry_payouts
+				&& tx.board_cosign_retry(utxo, &spk).await?;
 			// check the funding tx itself first, obviously can't exist
-			if tx.get_virtual_transaction_by_txid(utxo.txid).await?.is_some() {
+			if !retry && tx.get_virtual_transaction_by_txid(utxo.txid).await?.is_some() {
 				return badarg!("invalid funding tx: known as virtual tx: {}", utxo.txid);
 			}
 			let input_ids = funding_tx.input.iter()
@@ -760,25 +785,23 @@ impl Server {
 			}
 		}
 
-		let builder = BoardBuilder::new_for_cosign(
-			user_pubkey,
-			expiry_height,
-			self.server_pubkey,
-			self.config.vtxo_exit_delta,
-			amount,
-			fee,
-			utxo,
-			user_pub_nonce,
-		);
+		if self.config.expiry_payouts && owner_mailbox.is_none() {
+			return badarg!("board output requires a payout mailbox");
+		}
 
 		// Fees and the exit delta can change, so bind the output to one exit
 		// before signing, or two signed exits could spend it.
-		let spk = builder.funding_script_pubkey();
 		let exit_txid = builder.exit_txid();
-		let bound = self.db.write(async |t| t.bind_board_exit(utxo, &spk, exit_txid).await).await?;
-		if bound != exit_txid {
-			return badarg!("board utxo {} is already cosigned for another exit tx", utxo);
-		}
+		self.db.write(async |t| {
+			let bound = t.bind_board_exit(utxo, &spk, exit_txid).await?;
+			if bound != exit_txid {
+				return badarg!("board utxo {} is already cosigned for another exit tx", utxo);
+			}
+			if let Some(mailbox) = owner_mailbox.filter(|_| self.config.expiry_payouts) {
+				t.record_board_owner(builder.funding_vtxo(), exit_txid, user_pubkey, mailbox).await?;
+			}
+			Ok(())
+		}).await?;
 
 		info!("Cosigning board request for utxo {}", utxo);
 		let resp = builder.server_cosign(self.server_key.leak_ref());
@@ -881,6 +904,14 @@ impl Server {
 					vtxo.chain_anchor(),
 				);
 			}
+			let update = if self.config.expiry_payouts {
+				let mailbox = t.board_owner_mailbox(vtxo.chain_anchor(), &spk, vtxo.user_pubkey()).await?;
+				update.bind_owner_mailboxes(builder.build_server_vtxos().into_iter()
+					.filter(|output| output.policy().user_pubkey().is_some())
+					.map(|output| (output.id(), mailbox)))?
+			} else {
+				update
+			};
 			let inserted = t.execute_vtxo_tree_update(update).await?;
 			t.add_funding_vtxos_to_frontier(funding_txid, Some(confirmed_height)).await
 				.context("failed to add board vtxos to frontier")?;
@@ -1015,22 +1046,6 @@ impl Server {
 			.filter(|v| seen_ids.insert(v.id()))
 			.collect::<Vec<_>>();
 
-		// An htlc-send vtxo only exists once its signed chain is
-		// registered: that is when the server holds a claim on the funds.
-		let htlc_sends = vtxos.iter()
-			.filter_map(|v| match v.policy() {
-				VtxoPolicy::ServerHtlcSend(p) =>
-					Some((v.id(), p.payment_hash, p.htlc_expiry)),
-				VtxoPolicy::ServerHtlcSend_v0(p) =>
-					Some((v.id(), p.payment_hash, p.htlc_expiry)),
-				_ => None,
-			})
-			.collect::<Vec<_>>();
-
-		let mut signed_txs: Vec<Transaction> = Vec::new();
-		let mut seen_txids: HashSet<Txid> = HashSet::new();
-		let mut registered_ids: Vec<VtxoId> = Vec::new();
-
 		for vtxo in &vtxos {
 			let vtxo_id = vtxo.id();
 
@@ -1066,17 +1081,22 @@ impl Server {
 
 			self.check_registration_inputs_not_exited(vtxo).await?;
 
-			// Collect all signed transactions from the VTXO, deduplicating
-			// by txid since different vtxos can share parent transactions.
-			for item in vtxo.transactions() {
-				let txid = item.tx.compute_txid();
-				if seen_txids.insert(txid) {
-					trace!("Registering virtual tx {} for vtxo {}", txid, vtxo_id);
-					signed_txs.push(item.tx);
+		}
+		fn registration_update(vtxos: &[Vtxo<Full>]) -> VtxoTreeUpdate {
+			let mut signed_txs = Vec::new();
+			let mut seen_txids = HashSet::new();
+			for vtxo in vtxos {
+				for item in vtxo.transactions() {
+					let txid = item.tx.compute_txid();
+					if seen_txids.insert(txid) {
+						trace!("Registering virtual tx {} for vtxo {}", txid, vtxo.id());
+						signed_txs.push(item.tx);
+					}
 				}
 			}
-
-			registered_ids.push(vtxo_id);
+			VtxoTreeUpdate::new().upsert_signed_tx(signed_txs)
+				.provide_signatures(vtxos.to_vec())
+				.mark_vtxos_registered(vtxos.iter().map(Vtxo::id))
 		}
 
 		// Persist the fully-signed vtxos (so the server can later serve them to
@@ -1085,12 +1105,29 @@ impl Server {
 		// flip only affects `unregistered` vtxos; the stored vtxo bytes are
 		// overwritten regardless of state, which is safe because each vtxo was
 		// checked above to differ from the stored one only in its witnesses.
-		let update = VtxoTreeUpdate::new()
-			.upsert_signed_tx(signed_txs)
-			.provide_signatures(vtxos)
-			.mark_vtxos_registered(registered_ids);
 		self.db.write(async |t| {
-			t.execute_vtxo_tree_update(update).await?;
+			let mut vtxos = vtxos;
+			if let Err(error) = t.execute_vtxo_tree_update(registration_update(&vtxos)).await {
+				if !t.expiry_payouts() || !matches!(error.downcast_ref::<ExpiryPayoutRefusal>(),
+					Some(ExpiryPayoutRefusal::DecidedForPayout(_))) {
+					return Err(error);
+				}
+				let replays = t.completed_round_registration_replays(&vtxos).await?;
+				if replays.is_empty() { return Err(error); }
+				vtxos.retain(|v| !replays.contains(&v.id()));
+				if !vtxos.is_empty() {
+					t.execute_vtxo_tree_update(registration_update(&vtxos)).await?;
+				}
+			}
+			// An htlc-send vtxo only exists once its signed chain is
+			// registered: that is when the server holds a claim on the funds.
+			let htlc_sends = vtxos.iter().filter_map(|v| match v.policy() {
+				VtxoPolicy::ServerHtlcSend(p) =>
+					Some((v.id(), p.payment_hash, p.htlc_expiry)),
+				VtxoPolicy::ServerHtlcSend_v0(p) =>
+					Some((v.id(), p.payment_hash, p.htlc_expiry)),
+				_ => None,
+			}).collect::<Vec<_>>();
 			htlc_vtxo::create_htlc_vtxos(&t, &htlc_sends, HtlcDirection::Incoming).await?;
 			Ok(())
 		}).await?;

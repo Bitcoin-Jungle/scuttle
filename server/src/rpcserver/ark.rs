@@ -114,8 +114,8 @@ impl rpc::server::ArkService for Server {
 		};
 
 		let ret = protos::HandshakeResponse {
-			min_protocol_version: MIN_PROTOCOL_VERSION,
-			max_protocol_version: MAX_PROTOCOL_VERSION,
+			min_protocol_version: if self.config.expiry_payouts { rpc::pver::PROTOCOL_VERSION_SCUTTLE_EXPIRY_PAYOUT } else { MIN_PROTOCOL_VERSION },
+			max_protocol_version: if self.config.expiry_payouts { rpc::pver::PROTOCOL_VERSION_SCUTTLE_EXPIRY_PAYOUT } else { MAX_PROTOCOL_VERSION },
 			psa,
 		};
 		Ok(tonic::Response::new(ret))
@@ -171,9 +171,17 @@ impl rpc::server::ArkService for Server {
 
 		let id = VtxoId::from_bytes(req.vtxo_id)?;
 		let attestation = VtxoStatusAttestation::from_bytes(&req.attestation)?;
+		if let Some(status) = self.unregistered_board_status(id, &attestation).await? {
+			return Ok(tonic::Response::new(protos::GetVtxoStatusResponse {
+				spend_state: status.spend_state,
+				owner_mailbox: status.owner_mailbox,
+				expiry_payout: status.expiry_payout,
+			}));
+		}
 
 		let vtxo_state = self.db.read(async |t| t.get_server_vtxo_by_id(id).await).await
 			.to_status()?;
+		let payouts = self.vtxo_payouts(&[id]).await?;
 
 		let spend_state = vtxo_state.spend_state;
 		let user_vtxo = match vtxo_state.vtxo.try_into_user_vtxo() {
@@ -192,6 +200,8 @@ impl rpc::server::ArkService for Server {
 
 		Ok(tonic::Response::new(protos::GetVtxoStatusResponse {
 			spend_state: spend_state as i32,
+			owner_mailbox: payouts.owner_mailbox(&id),
+			expiry_payout: payouts.expiry_payout(&id),
 		}))
 	}
 
@@ -251,6 +261,7 @@ impl rpc::server::ArkService for Server {
 		let ids = queries.iter().map(|(id, _)| *id).collect::<Vec<_>>();
 		let states = self.db.read(async |t| t.get_existing_server_vtxos_by_id(&ids).await).await
 			.to_status()?;
+		let payouts = self.vtxo_payouts(&ids).await?;
 
 		// An id without a client-visible user vtxo is reported as missing,
 		// not as an error, so one bad id does not cost the client the batch.
@@ -266,6 +277,10 @@ impl rpc::server::ArkService for Server {
 		let mut missing = Vec::new();
 		for (id, attestation) in queries {
 			let Some((user_vtxo, spend_state)) = by_id.get(&id) else {
+				if let Some(status) = self.unregistered_board_status(id, &attestation).await? {
+					vtxos.push(status);
+					continue;
+				}
 				if !missing.contains(&id) {
 					missing.push(id);
 				}
@@ -278,6 +293,8 @@ impl rpc::server::ArkService for Server {
 			vtxos.push(protos::VtxoStatus {
 				vtxo_id: id.to_bytes().to_vec(),
 				spend_state: *spend_state as i32,
+				owner_mailbox: payouts.owner_mailbox(&id),
+				expiry_payout: payouts.expiry_payout(&id),
 			});
 		}
 
@@ -337,11 +354,14 @@ impl rpc::server::ArkService for Server {
 		// from, so their status needs no attestation of its own. A VTXO in a
 		// server-internal state is left out, as GetVtxoStatus reports it as
 		// not found.
+		let ids = res.vtxos.iter().map(|v| v.vtxo.id()).collect::<Vec<_>>();
+		let payouts = self.vtxo_payouts(&ids).await?;
 		let vtxos = res.vtxos.into_iter().filter_map(|v| {
 			Some(protos::RecoveredVtxo {
 				spend_state: client_spend_state(v.spend_state)? as i32,
 				vtxo: v.vtxo.serialize(),
 				derivation_index: v.derivation_index,
+				owner_mailbox: payouts.owner_mailbox(&v.vtxo.id()),
 			})
 		}).collect();
 
@@ -373,6 +393,11 @@ impl rpc::server::ArkService for Server {
 
 		let amount = Amount::from_sat(req.amount);
 		let user_pubkey = PublicKey::from_bytes(&req.user_pubkey)?;
+		let owner_mailbox = req.owner_mailbox.as_deref()
+			.filter(|_| self.config.expiry_payouts)
+			.map(MailboxIdentifier::deserialize)
+			.transpose().badarg("invalid board mailbox")?
+			.map(|id| id.as_pubkey());
 		let expiry_height = check_block_height(req.expiry_height)
 			.map_err(|e| tonic::Status::invalid_argument(format!("expiry_height: {e}")))?;
 		let utxo = OutPoint::from_bytes(&req.utxo)?;
@@ -380,7 +405,7 @@ impl rpc::server::ArkService for Server {
 		let funding_tx = bitcoin::Transaction::from_bytes(&req.funding_tx)?;
 
 		let resp = self.cosign_board(
-			amount, user_pubkey, expiry_height, utxo, &funding_tx, pub_nonce,
+			amount, user_pubkey, expiry_height, utxo, &funding_tx, pub_nonce, owner_mailbox,
 		).await.to_status()?;
 
 		Ok(tonic::Response::new(resp.into()))
@@ -466,10 +491,12 @@ impl rpc::server::ArkService for Server {
 		&self,
 		req: tonic::Request<protos::ArkoorPackageCosignRequest>,
 	) -> Result<tonic::Response<protos::ArkoorPackageCosignResponse>, tonic::Status> {
-		let request = ArkoorPackageCosignRequest::try_from(req.into_inner())
+		let req = req.into_inner();
+		let destinations = self.arkoor_destinations(&req.parts)?;
+		let request = ArkoorPackageCosignRequest::try_from(req)
 			.badarg("invalid cosign request")?;
 
-		let response = self.cosign_oor(request).await.to_status()?;
+		let response = self.cosign_oor(request, &destinations).await.to_status()?;
 		Ok(tonic::Response::new(response.into()))
 	}
 
@@ -488,10 +515,11 @@ impl rpc::server::ArkService for Server {
 				in order to be able to send Lightning payments.");
 		}
 
+		let destinations = self.arkoor_destinations(&req.parts)?;
 		let cosign_requests = ArkoorPackageCosignRequest::try_from(req.clone())
 			.badarg("invalid cosign request")?;
 
-		let resp = self.request_lightning_pay_htlc_cosign(cosign_requests)
+		let resp = self.request_lightning_pay_htlc_cosign(cosign_requests, &destinations)
 			.await.context("error making payment")?;
 
 		Ok(tonic::Response::new(resp.into()))
@@ -524,7 +552,8 @@ impl rpc::server::ArkService for Server {
 
 		let retry_for = req.retry_for_secs.map(|s| Duration::from_secs(s as u64));
 
-		self.initiate_lightning_payment(invoice, payment_amount, htlc_vtxo_ids, mailbox_id, retry_for)
+		self.initiate_lightning_payment(invoice, payment_amount, htlc_vtxo_ids, mailbox_id, retry_for,
+			req.intent_nonce, req.source_owner_signature)
 			.await
 			.to_status()?;
 		Ok(tonic::Response::new(protos::Empty {}))
@@ -540,7 +569,10 @@ impl rpc::server::ArkService for Server {
 		let req = req.into_inner();
 
 		let payment_hash = PaymentHash::from_bytes(req.hash)?;
-		let res = self.check_lightning_payment(payment_hash, req.wait).await.to_status()?;
+		let source_ids = req.htlc_vtxo_ids.iter().filter(|_| self.config.expiry_payouts)
+			.map(VtxoId::from_bytes)
+			.collect::<Result<Vec<_>, _>>()?;
+		let res = self.check_lightning_payment(payment_hash, req.wait, &source_ids).await.to_status()?;
 		Ok(tonic::Response::new(protos::LightningPaymentStatus { payment_status: Some(res) }))
 	}
 
@@ -549,10 +581,12 @@ impl rpc::server::ArkService for Server {
 		&self,
 		req: tonic::Request<protos::ArkoorPackageCosignRequest>
 	) -> Result<tonic::Response<protos::ArkoorPackageCosignResponse>, tonic::Status> {
-		let cosign_requests = ArkoorPackageCosignRequest::try_from(req.into_inner())
+		let req = req.into_inner();
+		let destinations = self.arkoor_destinations(&req.parts)?;
+		let cosign_requests = ArkoorPackageCosignRequest::try_from(req)
 			.badarg("invalid cosign request")?;
 
-		let cosign_resp = self.revoke_lightning_pay_htlcs(cosign_requests).await
+		let cosign_resp = self.revoke_lightning_pay_htlcs(cosign_requests, &destinations).await
 			.to_status()?;
 
 		Ok(tonic::Response::new(cosign_resp.into()))
@@ -685,15 +719,17 @@ impl rpc::server::ArkService for Server {
 		let payment_hash = PaymentHash::from_bytes(req.payment_hash)?;
 
 		let payment_preimage = Preimage::from_bytes(req.payment_preimage)?;
-		let cosign_request = ArkoorPackageCosignRequest::try_from(
-			req.cosign_request.badarg("cosign request missing")?,
-		).badarg("invalid cosign request")?;
+		let raw_cosign = req.cosign_request.badarg("cosign request missing")?;
+		let destinations = self.arkoor_destinations(&raw_cosign.parts)?;
+		let cosign_request = ArkoorPackageCosignRequest::try_from(raw_cosign)
+			.badarg("invalid cosign request")?;
 
 		let cosign_resp = self.claim_lightning_receive(
 			payment_hash,
 			payment_preimage,
 			cosign_request,
 			pver,
+			&destinations,
 		).await.to_status()?;
 
 		Ok(tonic::Response::new(cosign_resp.into()))
@@ -792,6 +828,15 @@ impl rpc::server::ArkService for Server {
 		if req.vtxo_requests.is_empty() {
 			macros::badarg!("invalid request: no outputs");
 		}
+
+		// Only payout mode reads this field for interactive rounds. It binds
+		// the outputs to the mailbox.
+		let unblinded_mailbox_id = req.unblinded_mailbox_id.as_ref()
+			.filter(|_| self.config.expiry_payouts)
+			.map(|b| MailboxIdentifier::deserialize(b)).transpose().badarg("invalid unblinded mailbox id")?;
+		if self.config.expiry_payouts && unblinded_mailbox_id.is_none() {
+			macros::badarg!("interactive round participations need an unblinded mailbox id");
+		}
 		let mut vtxo_requests = Vec::with_capacity(req.vtxo_requests.len());
 		for r in req.vtxo_requests.clone() {
 			// Make sure users provided right number of nonces.
@@ -799,6 +844,10 @@ impl rpc::server::ArkService for Server {
 				macros::badarg!("need exactly {} public nonces", self.config.nb_round_nonces);
 			}
 			vtxo_requests.push(r.try_into().badarg("invalid signed vtxo request")?);
+		}
+		if self.config.expiry_payouts {
+			let policies = vtxo_requests.iter().map(|r: &ark::SignedVtxoRequest| &r.vtxo.policy);
+			crate::owner_mailbox::refuse_padding_outputs(policies).to_status()?;
 		}
 
 		#[allow(deprecated)]
@@ -817,6 +866,7 @@ impl rpc::server::ArkService for Server {
 			challenge,
 			inputs: inputs.into_iter().map(|i| i.vtxo_id).collect(),
 			vtxo_requests,
+			unblinded_mailbox_id,
 			unlock_preimage: Secret::new(unlock_preimage),
 			user_agent: crate::telemetry::current_user_agent(),
 		};
@@ -894,7 +944,8 @@ impl rpc::server::ArkService for Server {
 			.map(|b| MailboxIdentifier::deserialize(&b[..]))
 			.transpose().badarg("invalid unblinded mailbox id")?;
 		// its status could never be queried, so the wallet couldn't progress it
-		if self.config.round_status_attestation_required && unblinded_mailbox_id.is_none() {
+		if (self.config.round_status_attestation_required || self.config.expiry_payouts)
+			&& unblinded_mailbox_id.is_none() {
 			macros::badarg!("delegated round participations need an unblinded mailbox id");
 		}
 
@@ -904,6 +955,10 @@ impl rpc::server::ArkService for Server {
 				vtxo_request: r.try_into().badarg("invalid vtxo request")?,
 				unblinded_mailbox_id,
 			});
+		}
+		if self.config.expiry_payouts {
+			let policies = outputs.iter().map(|o| &o.vtxo_request.policy);
+			crate::owner_mailbox::refuse_padding_outputs(policies).to_status()?;
 		}
 
 		let unlock_hash = self.register_delegated_round_participation(
@@ -933,8 +988,13 @@ impl rpc::server::ArkService for Server {
 			.filter(|p| !required || attestation.is_some_and(|a|
 				p.outputs.iter().filter_map(|o| o.unblinded_mailbox_id)
 					.any(|id| a.verify(unlock_hash, id).is_ok())
-			))
-			.not_found([unlock_hash], "round participation not found")?;
+			));
+		// A cancelled participation can be deleted, so check the tombstone
+		// unless only the owner may learn about the participation.
+		if self.config.expiry_payouts && (part.is_some() || !required) {
+			self.check_participation_not_cancelled(unlock_hash).await?;
+		}
+		let part = part.not_found([unlock_hash], "round participation not found")?;
 		let input_vtxo_ids = part.inputs.iter().map(|i| i.vtxo_id.to_bytes().to_vec()).collect();
 
 		let res = if let Some(round_id) = part.round_id {
@@ -958,7 +1018,11 @@ impl rpc::server::ArkService for Server {
 				output_vtxos.push(tree.build_vtxo(idx).serialize());
 			}
 
-			if part.inputs.iter().all(|i| i.is_forfeited()) {
+			// In payout mode a cancellation can race this read, so the release
+			// also needs the forfeit marker, and an empty input set never counts.
+			let releasable = !self.config.expiry_payouts
+				|| (part.forfeited_at.is_some() && !part.inputs.is_empty());
+			if releasable && part.inputs.iter().all(|i| i.is_forfeited()) {
 				protos::RoundParticipationStatusResponse {
 					status: protos::RoundParticipationStatus::RoundPartReleased.into(),
 					unlock_preimage: Some(part.unlock_preimage.leak_ref().to_vec()),
@@ -1140,6 +1204,7 @@ pub async fn run_rpc_server(srv: Arc<Server>) -> anyhow::Result<()> {
 		.add_service(rpc::server::ArkServiceServer::from_arc(srv.clone()))
 		.add_service(rpc::server::MailboxServiceServer::from_arc(srv.clone()))
 		.add_service(health_server);
+	let routes = if srv.config.expiry_payouts { super::expiry_payout::routes(&srv) } else { routes };
 
 	tonic::transport::Server::builder()
 		.accept_http1(true)
