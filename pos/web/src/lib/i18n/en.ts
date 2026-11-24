@@ -110,6 +110,8 @@ export const en = {
 	'pay.onchainRefused': 'On-chain is not available for this sale. Take it by Lightning.',
 	'pay.onchainFailed': "Couldn't get a Bitcoin address. Try again.",
 	'pay.partial': 'Received {seen} on-chain. {owed} still to pay.',
+	'pay.leave': 'Leave',
+	'pay.partialStaysOpen': "It can't be canceled now: it stays open until it expires, so the rest can still be paid.",
 	'pay.gettingReady': 'Getting ready',
 	'pay.scanLightning': 'Scan with a Lightning wallet',
 	'pay.scanOnchain': 'Scan with a Bitcoin wallet',

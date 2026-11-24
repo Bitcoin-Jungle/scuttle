@@ -112,6 +112,8 @@ export const es: Messages = {
 	'pay.onchainRefused': 'On-chain no está disponible para esta venta. Cóbrala por Lightning.',
 	'pay.onchainFailed': 'No se pudo obtener una dirección de Bitcoin. Inténtalo de nuevo.',
 	'pay.partial': 'Recibido {seen} on-chain. Faltan {owed}.',
+	'pay.leave': 'Salir',
+	'pay.partialStaysOpen': 'Ya no se puede cancelar: sigue abierta hasta que venza, así que aún se puede pagar el resto.',
 	'pay.gettingReady': 'Preparando',
 	'pay.scanLightning': 'Escanee con una billetera Lightning',
 	'pay.scanOnchain': 'Escanee con una billetera bitcoin',

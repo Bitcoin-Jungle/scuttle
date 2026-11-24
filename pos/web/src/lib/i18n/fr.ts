@@ -111,6 +111,8 @@ export const fr: Messages = {
 	'pay.onchainRefused': "On-chain n'est pas disponible pour cette vente. Encaissez-la par Lightning.",
 	'pay.onchainFailed': "Impossible d'obtenir une adresse Bitcoin. Réessayez.",
 	'pay.partial': '{seen} reçus on-chain. Il reste {owed} à payer.',
+	'pay.leave': 'Quitter',
+	'pay.partialStaysOpen': "Elle ne peut plus être annulée : elle reste ouverte jusqu'à son expiration, le reste peut donc encore être payé.",
 	'pay.gettingReady': 'Préparation',
 	'pay.scanLightning': 'Scannez avec un portefeuille Lightning',
 	'pay.scanOnchain': 'Scannez avec un portefeuille bitcoin',

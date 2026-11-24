@@ -213,7 +213,9 @@
 	}
 
 	async function cancel() {
-		if (!sale || sale.state !== 'open') {
+		// Part of the amount arrived on-chain, so posd keeps the sale: it
+		// stays open for the rest until it expires. Leave it as it is.
+		if (!sale || sale.state !== 'open' || partial) {
 			newSale()
 			return
 		}
@@ -232,6 +234,17 @@
 			// leaving would let staff charge again while the customer pays.
 			if (!(e instanceof ApiError && e.status === 409)) {
 				cancelError = e instanceof ApiError && e.status === 0 ? t('pay.cancelOffline') : t('pay.cancelFailed')
+			} else {
+				// posd refused because the sale moved on: a payment, or part
+				// of one on-chain. Show what it is now rather than nothing.
+				try {
+					const fresh = await client().sale(sale.id)
+					rememberSale(fresh)
+					sale = fresh
+					if (fresh.state === 'open' && !partialPayment(fresh)) cancelError = t('pay.cancelFailed')
+				} catch {
+					cancelError = t('pay.cancelFailed')
+				}
 			}
 		} finally {
 			canceling = false
@@ -250,7 +263,7 @@
 				onclick={cancel}
 				disabled={canceling}
 			>
-				<X size={20} />{t('common.cancel')}
+				<X size={20} />{partial ? t('pay.leave') : t('common.cancel')}
 			</button>
 			{#if remaining}
 				<p class="flex items-center gap-1.5 font-medium tabular-nums text-ink-soft" aria-label={t('pay.timeLeft')}>
@@ -301,6 +314,7 @@
 			{#if partial}
 				<p role="status" class="max-w-[300px] rounded-md bg-warn-bg px-3.5 py-3 text-[0.9375rem] leading-snug text-warn">
 					{t('pay.partial', { seen: formatSats(partial.seen), owed: formatSats(partial.owed) })}
+					{t('pay.partialStaysOpen')}
 				</p>
 			{/if}
 			{#if onchainError}
@@ -349,7 +363,9 @@
 			? t('pay.overpaid', { received: formatSats(sale.received_sat), extra: formatSats(sale.received_sat - sale.amount_sat) })
 			: undefined}
 		onnewsale={newSale}
-		onreceipt={() => router.go(`/receipt/${id}`)}
+		// Replace this finished sale in history, so the receipt's Back
+		// returns to the keypad rather than to this screen.
+		onreceipt={() => router.replace(`/receipt/${id}`)}
 	/>
 {:else if sale?.state === 'in-progress'}
 	<StatusScreen

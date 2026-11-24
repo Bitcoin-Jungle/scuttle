@@ -31,17 +31,22 @@
 
 	let creating = $state(false)
 	let errorMsg = $state<string | null>(null)
-	let rate = $state<Rate | null>(null)
+	let fetchedRate = $state<Rate | null>(null)
 	let rateError = $state(false)
 	let memoDraft = $state<string | null>(null)
+	// A price in another currency is no price: after the owner changes the
+	// store's currency, the old one would be off by the exchange rate.
+	const rate = $derived(fetchedRate?.currency === currency ? fetchedRate : null)
 
+	// Reloads at once when the store's currency changes, and every minute.
 	$effect(() => {
+		void currency
 		let stopped = false
 		async function load() {
 			try {
 				const next = await client().rate()
 				if (!stopped) {
-					rate = next
+					fetchedRate = next
 					rateError = false
 				}
 			} catch {
