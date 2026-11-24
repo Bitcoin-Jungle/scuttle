@@ -6,6 +6,9 @@ mod embedded {
 	pub mod migrations {
 		include!(concat!(env!("OUT_DIR"), "/migrations.rs"));
 	}
+	pub mod expiry_payout_migrations {
+		include!(concat!(env!("OUT_DIR"), "/expiry_payout_migrations.rs"));
+	}
 }
 
 mod ban;
@@ -154,6 +157,10 @@ impl Db {
 	async fn run_migrations(&self) -> anyhow::Result<()> {
 		let mut conn = self.get_conn().await?;
 		embedded::migrations::runner().run_async::<Client>(&mut conn).await?;
+		// The expiry payout schema has its own history, so its numbers
+		// never collide with those of the main migrations.
+		embedded::expiry_payout_migrations::runner().set_migration_table_name("expiry_payout_schema_history")
+			.run_async::<Client>(&mut conn).await?;
 		info!("All migrations got successfully run");
 		Ok(())
 	}
