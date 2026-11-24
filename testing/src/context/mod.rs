@@ -701,7 +701,7 @@ impl TestContext {
 	pub fn barkd<'a>(
 		&'a self,
 		name: impl AsRef<str>,
-		srv: &'a Captaind,
+		srv: &'a dyn ToArkUrl,
 	) -> builders::BarkdBuilder<'a> {
 		builders::BarkdBuilder::new(self, name, srv)
 	}

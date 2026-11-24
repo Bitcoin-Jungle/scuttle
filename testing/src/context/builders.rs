@@ -217,7 +217,7 @@ impl<'a> WatchmandBuilder<'a> {
 pub struct BarkdBuilder<'a> {
 	ctx: &'a TestContext,
 	name: String,
-	srv: &'a Captaind,
+	srv: &'a dyn super::ToArkUrl,
 	mnemonic: Option<String>,
 	birthday_height: Option<u32>,
 	mod_cfg: Option<Box<dyn FnOnce(&mut bark::Config)>>,
@@ -231,7 +231,7 @@ impl<'a> BarkdBuilder<'a> {
 	pub(super) fn new(
 		ctx: &'a TestContext,
 		name: impl AsRef<str>,
-		srv: &'a Captaind,
+		srv: &'a dyn super::ToArkUrl,
 	) -> Self {
 		BarkdBuilder {
 			ctx,

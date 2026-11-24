@@ -6,6 +6,7 @@
 
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use bitcoin::bip32::{Xpriv, Xpub};
@@ -21,6 +22,10 @@ use bark::payment_request::PaymentRequest;
 
 use ark_testing::{Captaind, TestContext, btc, sat};
 use ark_testing::context::LightningPaymentSetup;
+use ark_testing::daemon::captaind::ArkClient;
+use ark_testing::daemon::captaind::proxy::{ArkRpcProxy, ArkRpcProxyServer};
+use ark_testing::util::FutureExt;
+use server_rpc::protos;
 use ark_testing::pos::{ALPHA, BETA, BETA_CSS, Posd, admin_token, brand};
 use pos::api::lnurl::MAX_OPEN_PER_STORE;
 use pos::config::Config;
@@ -42,6 +47,31 @@ struct Store {
 	till: String,
 	// Kept alive for posd.
 	_forwarder: ark_testing::Barkd,
+	_forwarder_proxy: Option<ArkRpcProxyServer>,
+}
+
+/// Holds the forwarder's receive claims while `hold` is set. The forwarder
+/// has revealed the preimage, so the payment is on its way to the owner,
+/// but it cannot be delivered yet.
+#[derive(Clone, Default)]
+struct HoldClaims {
+	hold: Arc<AtomicBool>,
+	held: Arc<tokio::sync::Notify>,
+}
+
+#[async_trait::async_trait]
+impl ArkRpcProxy for HoldClaims {
+	async fn claim_lightning_receive(
+		&self, upstream: &mut ArkClient, request: protos::ClaimLightningReceiveRequest,
+	) -> Result<protos::ArkoorPackageCosignResponse, tonic::Status> {
+		if self.hold.load(Ordering::SeqCst) {
+			self.held.notify_one();
+			while self.hold.load(Ordering::SeqCst) {
+				tokio::time::sleep(Duration::from_millis(100)).await;
+			}
+		}
+		Ok(upstream.claim_lightning_receive(request).await?.into_inner())
+	}
 }
 
 /// The public descriptor of the host app's on-chain account of the owner.
@@ -56,6 +86,11 @@ async fn store_setup(ctx: &TestContext) -> Store {
 
 /// A store on a posd with a config `change` makes.
 async fn store_setup_with(ctx: &TestContext, change: impl FnOnce(&mut Config)) -> Store {
+	store_setup_held(ctx, change, None).await
+}
+
+/// A store whose forwarder reaches the Ark server through `hold`, if given.
+async fn store_setup_held(ctx: &TestContext, change: impl FnOnce(&mut Config), hold: Option<HoldClaims>) -> Store {
 	let lightning = ctx.new_lightning_setup("lightningd").await;
 	let srv = ctx.captaind("server").lightningd(&lightning.internal).funded(btc(10))
 		.cfg(|cfg| {
@@ -79,7 +114,14 @@ async fn store_setup_with(ctx: &TestContext, change: impl FnOnce(&mut Config)) -
 	// transaction, so a node that starts later knows the VTXO anchor.
 	srv.wait_for_vtxopool(ctx).await;
 	ctx.generate_blocks(1).await;
-	let forwarder = ctx.barkd("forwarder", &*srv).create().await;
+	let forwarder_proxy = match hold {
+		Some(hold) => Some(srv.start_proxy_no_mailbox(hold).await),
+		None => None,
+	};
+	let forwarder = match &forwarder_proxy {
+		Some(proxy) => ctx.barkd("forwarder", proxy).create().await,
+		None => ctx.barkd("forwarder", &*srv).create().await,
+	};
 
 	// The owner registers the store, then goes offline.
 	let owner_seed = bip39::Mnemonic::generate(12).unwrap();
@@ -116,7 +158,7 @@ async fn store_setup_with(ctx: &TestContext, change: impl FnOnce(&mut Config)) -
 	drop(owner);
 	let till = posd.pair(&owner_token, "Front till").await;
 
-	Store { srv, lightning, posd, owner_seed, owner_token, till, _forwarder: forwarder }
+	Store { srv, lightning, posd, owner_seed, owner_token, till, _forwarder: forwarder, _forwarder_proxy: forwarder_proxy }
 }
 
 async fn new_sale(store: &Store, body: Value) -> Value {
@@ -192,6 +234,34 @@ async fn pos_sale_paid_by_lightning() {
 	let csv = reqwest::Client::new().get(format!("{}/api/v1/sales.csv", store.posd.url))
 		.bearer_auth(&store.till).send().await.unwrap().text().await.unwrap();
 	assert!(csv.contains(id) && csv.contains("2 coffees") && csv.contains(",paid,lightning,"), "{}", csv);
+}
+
+/// A Lightning payment that is on its way when its sale expires keeps the
+/// sale open, so the terminal does not offer to charge the customer again.
+/// The sale is paid once the payment is delivered.
+#[tokio::test]
+async fn pos_sale_waits_for_an_arriving_lightning_payment() {
+	let ctx = TestContext::new("pos/pos_sale_waits_for_an_arriving_lightning_payment").await;
+	let hold = HoldClaims::default();
+	let expiry = Duration::from_secs(15);
+	let store = store_setup_held(&ctx, |cfg| cfg.sales.expiry_secs = expiry.as_secs(), Some(hold.clone())).await;
+	hold.hold.store(true, Ordering::SeqCst);
+
+	let sale = new_sale(&store, json!({ "amount_sat": 20_000 })).await;
+	let created = Instant::now();
+	let id = sale["id"].as_str().unwrap().to_string();
+	let invoice = sale["lightning_invoice"].as_str().unwrap().to_string();
+	let (paid, ()) = tokio::join!(store.lightning.external.try_pay_bolt11(invoice), async {
+		hold.held.notified().wait(SALE_TIMEOUT).await;
+		// Past the expiry, with time for the watcher to run several passes.
+		tokio::time::sleep((expiry + Duration::from_secs(4)).saturating_sub(created.elapsed())).await;
+		let open = store.posd.ok(Method::GET, &format!("/api/v1/sales/{}", id), Some(&store.till), None).await;
+		assert_eq!(open["state"], "open", "the sale expired while its payment was on its way");
+		hold.hold.store(false, Ordering::SeqCst);
+	});
+	paid.expect("the customer's payment completes");
+	let paid = store.posd.wait_sale_state(&store.till, &id, "paid", SALE_TIMEOUT).await;
+	assert_eq!(paid["paid_rail"], "lightning");
 }
 
 /// A sale request repeated with its Idempotency-Key, as a terminal does after

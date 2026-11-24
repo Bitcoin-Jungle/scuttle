@@ -73,9 +73,10 @@ pub async fn run(app: Arc<App>) {
 /// One pass: Lightning payments always, on-chain ones as `pass` says, then
 /// expiry.
 ///
-/// A sale expires only on a pass that checked its on-chain address, and
-/// only if that check worked: a payment made just before expiry must be
-/// seen before the sale ends.
+/// A sale expires only on a pass that checked its on-chain address, only if
+/// every check of it worked, and only while no Lightning payment of it is on
+/// its way: a payment made just before expiry must be seen before the sale
+/// ends.
 pub async fn run_once(app: &App, pass: Pass) -> anyhow::Result<()> {
 	let payments = watched_payments(app, pass).await?;
 	// Terminal sales come first in the list, so a backlog of Lightning
@@ -83,8 +84,9 @@ pub async fn run_once(app: &App, pass: Pass) -> anyhow::Result<()> {
 	let results = futures::stream::iter(payments)
 		.map(|p| async move {
 			let result = match observe(app, &p).await {
-				Ok(Some(obs)) => record(app, &p, &obs).await,
-				Ok(None) => Ok(false),
+				Ok(Seen::Change(obs)) => record(app, &p, &obs).await.map(|changed| (changed, false)),
+				Ok(Seen::Arriving) => Ok((false, true)),
+				Ok(Seen::Nothing) => Ok((false, false)),
 				Err(e) => Err(e),
 			};
 			(p, result)
@@ -92,20 +94,23 @@ pub async fn run_once(app: &App, pass: Pass) -> anyhow::Result<()> {
 		.buffered(CONCURRENT_CHECKS)
 		.collect::<Vec<_>>().await;
 	let mut changed = false;
-	let mut unchecked = Vec::new();
+	let mut held = Vec::new();
 	for (p, result) in results {
 		match result {
-			Ok(c) => changed |= c,
+			Ok((c, arriving)) => {
+				changed |= c;
+				if arriving {
+					held.push(p.sale_id);
+				}
+			},
 			Err(e) => {
 				tracing::warn!("check of sale {} ({}) failed: {:#}", p.sale_public_id, p.rail.as_str(), e);
-				if p.rail == Rail::Onchain {
-					unchecked.push(p.sale_id);
-				}
+				held.push(p.sale_id);
 			},
 		}
 	}
 	if pass.live_onchain {
-		changed |= expire(app, &unchecked).await?;
+		changed |= expire(app, &held).await?;
 	}
 	if changed {
 		app.notify_sale_change();
@@ -130,18 +135,30 @@ async fn watched_payments(app: &App, pass: Pass) -> anyhow::Result<Vec<WatchedPa
 	Ok(rows.iter().map(WatchedPayment::from_row).collect())
 }
 
-/// Checks one rail. `None` means nothing new.
-async fn observe(app: &App, p: &WatchedPayment) -> anyhow::Result<Option<Observation>> {
+/// What a check of one rail found.
+enum Seen {
+	/// Nothing new.
+	Nothing,
+	/// A Lightning payment is on its way to the owner, so its sale must not
+	/// expire.
+	Arriving,
+	/// A change to record.
+	Change(Observation),
+}
+
+/// Checks one rail.
+async fn observe(app: &App, p: &WatchedPayment) -> anyhow::Result<Seen> {
 	match p.rail {
 		Rail::Lightning => {
 			let hash = p.payment_hash.as_deref().context("Lightning payment without hash")?;
 			Ok(match app.forwarder.status(hash).await? {
-				ForwardStatus::AwaitingPayment | ForwardStatus::Arriving => None,
-				ForwardStatus::Delivered(amount) => Some(Observation {
+				ForwardStatus::AwaitingPayment => Seen::Nothing,
+				ForwardStatus::Arriving => Seen::Arriving,
+				ForwardStatus::Delivered(amount) => Seen::Change(Observation {
 					received: amount, pending: Amount::ZERO, settled: true, txids: None,
 				}),
 				// Canceled or expired unpaid: stop checking it.
-				ForwardStatus::Gone => Some(Observation {
+				ForwardStatus::Gone => Seen::Change(Observation {
 					received: Amount::ZERO, pending: Amount::ZERO, settled: true, txids: None,
 				}),
 			})
@@ -153,9 +170,9 @@ async fn observe(app: &App, p: &WatchedPayment) -> anyhow::Result<Option<Observa
 			let unchanged = funds.confirmed.to_sat() as i64 == p.received_sat
 				&& funds.pending.to_sat() as i64 == p.pending_sat;
 			if unchanged {
-				return Ok(None);
+				return Ok(Seen::Nothing);
 			}
-			Ok(Some(Observation {
+			Ok(Seen::Change(Observation {
 				received: funds.confirmed,
 				pending: funds.pending,
 				// An address stays watched for late or extra payments until
@@ -302,20 +319,20 @@ pub async fn settle_canceled(app: &App, payment_id: i64) -> anyhow::Result<()> {
 /// sale changed state.
 pub async fn check_now(app: &App, p: &WatchedPayment) -> anyhow::Result<bool> {
 	match observe(app, p).await? {
-		Some(obs) => record(app, p, &obs).await,
-		None => Ok(false),
+		Seen::Change(obs) => record(app, p, &obs).await,
+		Seen::Nothing | Seen::Arriving => Ok(false),
 	}
 }
 
-/// Expires open sales past their expiry, except `unchecked` ones, whose
-/// on-chain check failed. An `in-progress` sale stays open for its mempool
-/// payment.
-async fn expire(app: &App, unchecked: &[i64]) -> anyhow::Result<bool> {
+/// Expires open sales past their expiry, except `held` ones: a check of one
+/// of their rails failed, or a Lightning payment of theirs is on its way.
+/// An `in-progress` sale stays open for its mempool payment.
+async fn expire(app: &App, held: &[i64]) -> anyhow::Result<bool> {
 	let conn = app.db.conn().await?;
 	let n = conn.execute("
 		UPDATE sale SET state = 'expired', updated_at = NOW()
 		WHERE state = 'open' AND expires_at < NOW() AND NOT (id = ANY($1))
-	", &[&unchecked]).await?;
+	", &[&held]).await?;
 	Ok(n > 0)
 }
 
