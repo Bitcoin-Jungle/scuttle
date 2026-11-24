@@ -139,14 +139,17 @@ pub struct Store {
 	pub name: String,
 	pub ark_address: String,
 	pub onchain_descriptor: String,
+	pub next_onchain_index: i64,
+	pub silent_payment_address: Option<String>,
 	pub currency: String,
 	pub brand: BrandKey,
 	pub onchain_min_sat: i64,
 	pub lightning_address_name: Option<String>,
 }
 
-pub const STORE_COLUMNS: &str = "s.id, s.name, s.ark_address, s.onchain_descriptor, s.currency, \
-	s.brand, s.onchain_min_sat, s.lightning_address_name";
+pub const STORE_COLUMNS: &str = "s.id, s.name, s.ark_address, s.onchain_descriptor, \
+	s.next_onchain_index, s.silent_payment_address, s.currency, s.brand, s.onchain_min_sat, \
+	s.lightning_address_name";
 
 impl Store {
 	pub fn from_row(row: &Row) -> Store {
@@ -155,6 +158,8 @@ impl Store {
 			name: row.get("name"),
 			ark_address: row.get("ark_address"),
 			onchain_descriptor: row.get("onchain_descriptor"),
+			next_onchain_index: row.get("next_onchain_index"),
+			silent_payment_address: row.get("silent_payment_address"),
 			currency: row.get("currency"),
 			// Only posd writes the column, with a valid key.
 			brand: BrandKey::from_db(row.get("brand")),
@@ -201,16 +206,29 @@ pub struct Sale {
 	pub expires_at: DateTime<Utc>,
 	pub paid_at: Option<DateTime<Utc>>,
 	pub lightning_invoice: String,
+	/// Whether the sale offers on-chain, or can once the cashier picks it:
+	/// a terminal's sale of at least the store's on-chain minimum.
+	pub onchain_available: bool,
 	pub onchain_address: Option<String>,
+	/// Confirmed to the on-chain address.
+	pub onchain_received_sat: i64,
+	/// In the mempool to the on-chain address.
+	pub onchain_pending_sat: i64,
 }
 
-/// Selects a sale joined with its device and its rails. Callers add the
-/// WHERE clause. Every sale has a Lightning rail.
+/// Selects a sale joined with its store, its device and its rails. Callers
+/// add the WHERE clause. Every sale has a Lightning rail; it has an
+/// on-chain one once the cashier picks on-chain.
 pub const SALE_SELECT: &str = "
 	SELECT s.id, s.public_id, d.name AS device_name, s.amount_sat, s.fiat_amount,
 		s.currency, s.btc_price, s.memo, s.state, s.paid_rail, s.received_sat, s.created_at,
-		s.expires_at, s.paid_at, ln.invoice AS lightning_invoice, oc.onchain_address
+		s.expires_at, s.paid_at, ln.invoice AS lightning_invoice,
+		oc.id IS NOT NULL OR (s.device_id IS NOT NULL AND s.amount_sat >= st.onchain_min_sat)
+			AS onchain_available,
+		oc.onchain_address, coalesce(oc.received_sat, 0) AS onchain_received_sat,
+		coalesce(oc.pending_sat, 0) AS onchain_pending_sat
 	FROM sale s
+	JOIN store st ON st.id = s.store_id
 	LEFT JOIN device d ON d.id = s.device_id
 	JOIN sale_payment ln ON ln.sale_id = s.id AND ln.rail = 'lightning'
 	LEFT JOIN sale_payment oc ON oc.sale_id = s.id AND oc.rail = 'onchain'
@@ -234,7 +252,10 @@ impl Sale {
 			expires_at: row.get("expires_at"),
 			paid_at: row.get("paid_at"),
 			lightning_invoice: row.get("lightning_invoice"),
+			onchain_available: row.get("onchain_available"),
 			onchain_address: row.get("onchain_address"),
+			onchain_received_sat: row.get("onchain_received_sat"),
+			onchain_pending_sat: row.get("onchain_pending_sat"),
 		}
 	}
 }

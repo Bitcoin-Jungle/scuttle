@@ -46,23 +46,28 @@ Errors return a non-2xx status with `{"error": "<message>"}`:
 | Lightning | `lightning` | Any Lightning wallet, including an Ark wallet on the same Ark server | barkd delivered the claim to the owner's mailbox |
 | On-chain | `onchain` | Any bitcoin wallet | 1 confirmation |
 
-A sale offers its rails in three fields:
+The terminal shows one rail's QR code at a time, which stays sparse enough
+for any phone to scan. posd gives no combined BIP 321 URI: wallets that only
+know BIP 21 mishandle one.
 
 - `lightning_invoice` is the forwarding invoice. A wallet on the same Ark
   server pays it without leaving the Ark, at the server's intra-Ark fees.
-- `onchain_address` is an unused address from the store's descriptor, or
-  `null` when the sale amount is below the store's `onchain_min_sat`. No two
-  sales get the same address, even of two stores that registered the same
-  descriptor. A sale also skips an address that already received a payment
-  posd can see, such as one of the wallet's own receives: with Esplora any
-  payment, with bitcoind one from the last two hours, as older ones never
-  count. The wallet must still keep a dedicated account for the
-  descriptor: a receive address it hands out later could match a sale.
-- `payment_request` is both in one BIP 321 URI,
-  `bitcoin:<address>?amount=<btc>&lightning=<bolt11>`, or
-  `bitcoin:?lightning=<bolt11>` without on-chain. The terminal does not show
-  it: it shows one rail's QR code at a time, which stays sparse enough for
-  any phone to scan.
+- `onchain_address` is `null` until the cashier picks on-chain: then
+  `POST /api/v1/sales/<id>/onchain` gives the sale an unused address from the
+  store's descriptor. `onchain_available` says whether it can: a terminal's
+  sale of at least the store's `onchain_min_sat`. Making the address only
+  when it may be paid keeps the descriptor from filling with addresses no
+  payer saw, which a wallet restored from seed would have to scan past.
+  No two sales get the same address, even of two stores that registered the
+  same descriptor. A sale also skips an address that already received a
+  payment posd can see, such as one of the wallet's own receives: with
+  Esplora any payment, with bitcoind one from the last two hours, as older
+  ones never count. The wallet must still keep a dedicated account for the
+  descriptor: a receive address it hands out later could match a sale. The
+  owner's store shows `next_onchain_index`, how far posd has gone into it.
+- `onchain_uri` is the address and the full amount as a BIP 21 URI,
+  `bitcoin:<address>?amount=<btc>`. It keeps the full amount after a partial
+  payment, which `onchain_received_sat` and `onchain_pending_sat` show.
 
 ## Types
 
@@ -79,9 +84,12 @@ A sale offers its rails in three fields:
   "currency": "CRC",
   "btc_price": "62500000.00",
   "memo": "2 coffees",
-  "payment_request": "bitcoin:bc1p…?amount=0.00035&lightning=lnbc…",
   "lightning_invoice": "lnbc…",
+  "onchain_available": true,
   "onchain_address": "bc1p…",
+  "onchain_uri": "bitcoin:bc1p…?amount=0.00035",
+  "onchain_received_sat": 0,
+  "onchain_pending_sat": 0,
   "paid_at": null,
   "paid_rail": null,
   "received_sat": 0,
@@ -100,7 +108,11 @@ A sale offers its rails in three fields:
     delivers after the sale expired, as after a posd outage, still makes it
     `paid`: the invoice expired with the sale, so it was paid in time.
 - `paid_rail` is `lightning`, `onchain` or `null`.
-- `onchain_address` is `null` below the on-chain minimum.
+- `onchain_address` and `onchain_uri` are `null` until the cashier picks
+  on-chain.
+- `onchain_received_sat` is confirmed and `onchain_pending_sat` in the
+  mempool, both to the on-chain address. On an `open` sale, a non-zero sum is
+  a partial payment: the payer still owes the rest.
 - `fiat_amount`, `currency` and `btc_price` are `null` when the sale was keyed
   in sats.
 - `device_name` is `null` for a Lightning address payment.
@@ -149,8 +161,9 @@ A terminal sends `Authorization: Bearer <device token>`.
 | `GET /api/v1/rate` | | `{"currency": "CRC", "btc_price": "62500000.00", "fetched_at": "…"}` |
 | `POST /api/v1/sales` | `{"fiat_amount": "12.50", "currency": "CRC", "memo": "…"}` or `{"amount_sat": 35000, "memo": "…"}` | `Sale` |
 | `GET /api/v1/sales/<id>` | | `Sale` |
-| `GET /api/v1/sales/<id>?wait=<state>` | | `Sale`, returned when the state is not `<state>` or after 25 s |
-| `POST /api/v1/sales/<id>/cancel` | | `Sale`; `409` unless the sale is `open`, or when a payment for it is arriving |
+| `GET /api/v1/sales/<id>?wait=<state>&onchain_sat=<n>` | | `Sale`, returned when the state is not `<state>`, when `onchain_received_sat + onchain_pending_sat` is not `<n>`, or after 25 s; `onchain_sat` is optional |
+| `POST /api/v1/sales/<id>/onchain` | | `Sale` with its on-chain address, the same one on a repeat; `409` when the sale is not `open`, is a Lightning address payment, is below the store's `onchain_min_sat`, or the store has no unused address |
+| `POST /api/v1/sales/<id>/cancel` | | `Sale`; `409` unless the sale is `open`, or when a payment for it, or part of one, arrived |
 | `GET /api/v1/sales?before=<id>&limit=<n>` | | `{"sales": [Sale]}`, newest first, at most 100 |
 | `GET /api/v1/sales.csv?from=<date>&to=<date>` | | CSV, one row per sale |
 
@@ -163,8 +176,10 @@ another currency.
 A cancel first checks the sale's on-chain address, then cancels the
 Lightning invoice with barkd. When a payment was made on either rail, the
 sale is not canceled: the cancel is `409`, and the sale soon shows
-`in-progress` or `paid`. When barkd fails to cancel an unpaid invoice, the
-cancel is `502` and the sale stays open.
+`in-progress` or `paid`. Part of the amount paid on-chain also makes it
+`409`: the cashier takes the rest, or lets the sale expire with the part
+recorded. When barkd fails to cancel an unpaid invoice, the cancel is `502`
+and the sale stays open.
 
 `POST /api/v1/sales` takes an optional `Idempotency-Key` header: 1 to 64
 letters, digits, `-` or `_`, unique per sale on the device. A request
@@ -173,8 +188,8 @@ network, returns the sale of the first request instead of making another.
 The same key with a different body is `409`.
 
 The terminal follows a sale by repeating the `?wait=` request with the last
-state it saw. After any drop, the next request returns the current state at
-once, so no change is missed.
+state and on-chain sum it saw. After any drop, the next request returns the
+current sale at once, so no change, a partial payment included, is missed.
 
 `from` and `to` are dates (`2026-11-20`, in UTC) or RFC 3339 times. A date as
 `to` includes that whole day.
@@ -198,6 +213,7 @@ BIP 340 Schnorr over SHA-256).
     "name": "Corner Café",
     "ark_address": "ark1…",
     "onchain_descriptor": "tr([fingerprint/86'/0'/1']xpub…/0/*)",
+    "silent_payment_address": "sp1q…",
     "currency": "CRC",
     "brand": "example",
     "lightning_address_name": "cornercafe",
@@ -214,6 +230,7 @@ posd registration v1
 name:<name>
 ark_address:<ark_address>
 onchain_descriptor:<onchain_descriptor>
+silent_payment_address:<silent_payment_address>
 currency:<currency>
 brand:<brand>
 lightning_address_name:<lightning_address_name>
@@ -225,6 +242,12 @@ its brand's domain (`cornercafe` for `cornercafe@pay.example.com`), or
 empty for none, in which case the line is `lightning_address_name:` and the
 field may be left out of the JSON. A name has 1 to 64 lowercase letters,
 digits, `.`, `-` and `_`.
+
+`silent_payment_address` is the owner's BIP 352 address (`sp1q…`, `tsp1q…`
+on test networks), which the store's Lightning address offers to payers that
+ask for it (see LNURL). It is empty for none, like `lightning_address_name`.
+posd checks that it is a version 0 address for its network with two valid
+keys; it never pays to it or scans for it.
 
 `currency` is one that posd's price source quotes, which the config lists
 (`[price] currencies`). With the Bull Bitcoin source they are `USD`, `CAD`,
@@ -239,15 +262,31 @@ posd refuses the registration with `400` when:
 - The timestamp is more than 10 minutes away from its clock.
 - The address is not for its Ark server.
 - The descriptor is not a public, ranged descriptor.
+- The silent payment address is not a version 0 address for posd's network.
 - The currency is not one of those.
 - The posd does not serve the brand `brand`.
 - The Lightning address name breaks the rule above.
 
 and with `409` when:
 - A store is already registered for `ark_address`.
-- The Lightning address name is taken or reserved on the brand's domain.
+- The Lightning address name is taken, reserved or held on the brand's
+  domain.
 
-The response is `{"store": Store}`.
+The response is `{"store": OwnerStore}`: the `Store`, and
+
+```json
+{
+  "ark_address": "ark1…",
+  "onchain_descriptor": "tr([fingerprint/86'/0'/1']xpub…/0/*)",
+  "next_onchain_index": 12,
+  "silent_payment_address": "sp1q…"
+}
+```
+
+`next_onchain_index` is the next index posd gives a sale from the descriptor.
+Every index below it may have been shown to a payer, so a wallet that
+restores the account scans at least that far, and gives none of those
+addresses out for its own receives.
 
 ### Login
 
@@ -266,13 +305,22 @@ The owner sends `Authorization: Bearer <owner token>`.
 
 | Method and path | Body | Returns |
 |---|---|---|
-| `GET /api/v1/owner/store` | | `Store` |
-| `PATCH /api/v1/owner/store` | any of `name`, `currency`, `brand`, `onchain_min_sat`, `lightning_address_name` (`""` removes it) | `Store`; `400` for a brand this posd does not serve, `409` for a name taken or reserved on the store's domain |
+| `GET /api/v1/owner/store` | | `OwnerStore` |
+| `PATCH /api/v1/owner/store` | any of `name`, `currency`, `brand`, `onchain_min_sat`, `lightning_address_name` (`""` removes it) | `OwnerStore`; `400` for a brand this posd does not serve, `409` for a name taken, reserved or held on the store's domain |
 | `POST /api/v1/owner/invites` | | `{"code": "…", "url": "https://…/pair/<code>", "expires_at": "…"}`; valid for 24 hours |
 | `GET /api/v1/owner/devices` | | `{"devices": [{"id": 1, "name": "…", "created_at": "…", "revoked_at": null}]}` |
 | `DELETE /api/v1/owner/devices/<id>` | | `204` |
 | `GET /api/v1/owner/sales?before=<id>&limit=<n>` | | `{"sales": [Sale]}` |
 | `GET /api/v1/owner/sales.csv?from=<date>&to=<date>` | | CSV |
+
+### Held names
+
+A Lightning address name a store gives up, by a rename, by removing its
+address or by moving to another brand, is held for that store for 90 days.
+Payers may have saved the old address: while it is held, it pays nobody
+(the pay request is `404`) and no other store can take it, not even from the
+operator. The store that gave it up can take it back. After the hold, anyone
+can.
 
 ## Operator
 
@@ -285,12 +333,13 @@ old name to the store the user's wallet registered.
 | Method and path | Body | Returns |
 |---|---|---|
 | `POST /api/v1/admin/reserved-names` | `{"names": ["cornercafe", …]}`, at most 10,000 | `{"reserved": <names newly reserved>}` |
-| `POST /api/v1/admin/lightning-addresses` | `{"ark_address": "ark1…", "name": "cornercafe"}` | `Store`; `404` if no store of the brand has the address, `409` if another store has the name |
+| `POST /api/v1/admin/lightning-addresses` | `{"ark_address": "ark1…", "name": "cornercafe"}` | `Store`; `404` if no store of the brand has the address, `409` if another store has or holds the name |
 
 A reserved name cannot be taken at registration or by an owner's `PATCH`
 (`409`), on that brand's domain only. The operator assigns it, reserved or
 not. A store keeps an assigned name through later changes, but cannot move
-it onto a domain where it is reserved.
+it onto a domain where it is reserved. The name the store had is held for it
+like any other it gives up.
 
 ## LNURL
 
@@ -305,8 +354,18 @@ reason.
 
 - `GET /.well-known/lnurlp/<name>` returns the pay request. `minSendable` is
   1,000 msat and `maxSendable` is set in the posd config.
+  `payment_methods` lists the LUD-22 methods besides Lightning: `ARK`, and
+  `SP` when the owner registered a silent payment address.
 - `GET /api/v1/lnurlp/<name>/callback?amount=<msat>` creates a sale with no
   device and returns `{"pr": "<forwarding invoice>", "routes": []}`. Asking
   for an invoice needs no credentials, so a store has at most 25 unpaid ones
   open at once, and a posd 500: past that the callback is `429` until some
   are paid or expire.
+- `GET /api/v1/lnurlp/<name>/callback?amount=<msat>&payment_method=<methods>`
+  (LUD-22) takes methods from `payment_methods`, comma-separated, most
+  preferred first, and answers the first one the store offers with the
+  owner's address: `{"ARK": {"address": "ark1…"}}` or `{"SP": {"address":
+  "sp1q…"}}`. The payer pays the callback's amount to it directly. With no
+  method the store offers, the answer is an invoice, so a payer tells the
+  answers apart by their shape. These payments never pass posd: they are
+  not in the store's sales.

@@ -8,7 +8,9 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use bitcoin::bech32::{Bech32m, ByteIterExt, Fe32, Fe32IterExt, Hrp};
 use bitcoin::bip32::{Xpriv, Xpub};
+use bitcoin::secp256k1::SecretKey;
 use bitcoin::{Amount, Network};
 use bitcoin_ext::BlockDelta;
 use reqwest::{Method, StatusCode};
@@ -48,6 +50,15 @@ struct Store {
 fn owner_descriptor() -> String {
 	let xpriv = Xpriv::new_master(Network::Regtest, &[42u8; 32]).unwrap();
 	format!("tr({}/0/*)", Xpub::from_priv(&SECP, &xpriv))
+}
+
+/// A regtest BIP 352 silent payment address of the owner.
+fn owner_silent_payment_address() -> String {
+	let key = |b: u8| SecretKey::from_slice(&[b; 32]).unwrap().public_key(&SECP).serialize();
+	[key(7), key(8)].concat().into_iter().bytes_to_fes()
+		.with_checksum::<Bech32m>(&Hrp::parse("tsp").unwrap())
+		.with_witness_version(Fe32::Q)
+		.chars().collect()
 }
 
 async fn store_setup(ctx: &TestContext) -> Store {
@@ -91,6 +102,7 @@ async fn store_setup_with(ctx: &TestContext, change: impl FnOnce(&mut Config)) -
 		name: "Corner Café".into(),
 		ark_address: address.to_string(),
 		onchain_descriptor: owner_descriptor(),
+		silent_payment_address: String::new(),
 		currency: "CRC".into(),
 		brand: brand(ALPHA),
 		lightning_address_name: String::new(),
@@ -121,6 +133,17 @@ async fn store_setup_with(ctx: &TestContext, change: impl FnOnce(&mut Config)) -
 
 async fn new_sale(store: &Store, body: Value) -> Value {
 	store.posd.ok(Method::POST, "/api/v1/sales", Some(&store.till), Some(body)).await
+}
+
+/// A sale of the terminal `till` for `amount_sat`, for which the cashier
+/// picked on-chain.
+async fn onchain_sale(store: &Store, till: &str, amount_sat: u64) -> Value {
+	let sale = store.posd.ok(Method::POST, "/api/v1/sales", Some(till),
+		Some(json!({ "amount_sat": amount_sat }))).await;
+	assert_eq!(sale["onchain_available"], true);
+	assert_eq!(sale["onchain_address"], Value::Null, "the address waits for the cashier to pick on-chain");
+	store.posd.ok(Method::POST, &format!("/api/v1/sales/{}/onchain", sale["id"].as_str().unwrap()),
+		Some(till), None).await
 }
 
 /// A payer that pays a payment request the default way.
@@ -177,9 +200,11 @@ async fn pos_sale_paid_by_lightning() {
 	assert_eq!(sale["state"], "open");
 	assert_eq!(sale["amount_sat"], 20_000);
 	assert_eq!(sale["fiat_amount"], "12500.00");
-	assert_eq!(sale["onchain_address"], Value::Null);
-	let pr = sale["payment_request"].as_str().unwrap();
-	assert_eq!(pr, format!("bitcoin:?lightning={}", sale["lightning_invoice"].as_str().unwrap()));
+	assert_eq!(sale["onchain_available"], false);
+	assert_eq!(sale["onchain_uri"], Value::Null);
+	let (status, body) = store.posd.call(Method::POST,
+		&format!("/api/v1/sales/{}/onchain", sale["id"].as_str().unwrap()), Some(&store.till), None).await;
+	assert_eq!(status, StatusCode::CONFLICT, "below the minimum, on-chain is refused: {}", body);
 
 	store.lightning.external.pay_bolt11(sale["lightning_invoice"].as_str().unwrap()).await;
 	let id = sale["id"].as_str().unwrap();
@@ -241,7 +266,7 @@ async fn pos_sale_paid_from_the_same_ark() {
 
 	let sale = new_sale(&store, json!({ "amount_sat": 30_000 })).await;
 	let id = sale["id"].as_str().unwrap();
-	let kind = pay(&payer, sale["payment_request"].as_str().unwrap()).await;
+	let kind = pay(&payer, sale["lightning_invoice"].as_str().unwrap()).await;
 	let paid = store.posd.wait_sale_state(&store.till, id, "paid", SALE_TIMEOUT).await;
 	assert_eq!(paid["paid_rail"], "lightning", "payer chose {}", kind);
 	assert_eq!(paid["received_sat"], 30_000);
@@ -270,7 +295,7 @@ async fn pos_owner_restores_on_a_new_phone() {
 	store.lightning.external.pay_bolt11(sale["lightning_invoice"].as_str().unwrap()).await;
 	store.posd.wait_sale_state(&store.till, sale["id"].as_str().unwrap(), "paid", SALE_TIMEOUT).await;
 	let sale = new_sale(&store, json!({ "amount_sat": 30_000 })).await;
-	pay(&payer, sale["payment_request"].as_str().unwrap()).await;
+	pay(&payer, sale["lightning_invoice"].as_str().unwrap()).await;
 	store.posd.wait_sale_state(&store.till, sale["id"].as_str().unwrap(), "paid", SALE_TIMEOUT).await;
 
 	let before = sat(20_000) - LIGHTNING_RECEIVE_FEE + sat(30_000);
@@ -278,43 +303,82 @@ async fn pos_owner_restores_on_a_new_phone() {
 
 	// The store keeps selling, and the new phone receives it.
 	let sale = new_sale(&store, json!({ "amount_sat": 10_000 })).await;
-	pay(&payer, sale["payment_request"].as_str().unwrap()).await;
+	pay(&payer, sale["lightning_invoice"].as_str().unwrap()).await;
 	store.posd.wait_sale_state(&store.till, sale["id"].as_str().unwrap(), "paid", SALE_TIMEOUT).await;
 	wait_spendable(&phone, before + sat(10_000)).await;
 }
 
+/// The cashier picks on-chain, and the sale gets its address then. The
+/// customer pays part of the amount, which the till shows, then the rest.
 #[tokio::test]
 async fn pos_sale_paid_onchain() {
 	let ctx = TestContext::new("pos/pos_sale_paid_onchain").await;
 	let store = store_setup(&ctx).await;
+	let till = Some(store.till.as_str());
 
-	// At or above the 50,000-sat minimum, the sale offers an address.
-	let sale = new_sale(&store, json!({ "amount_sat": 60_000 })).await;
+	// At or above the 50,000-sat minimum, the sale can be paid on-chain.
+	let sale = onchain_sale(&store, &store.till, 60_000).await;
 	let id = sale["id"].as_str().unwrap();
 	let address = sale["onchain_address"].as_str().expect("an on-chain address").to_string();
-	assert!(sale["payment_request"].as_str().unwrap()
-		.starts_with(&format!("bitcoin:{}?amount=0.0006&lightning=", address)));
-	let second = new_sale(&store, json!({ "amount_sat": 60_000 })).await;
+	assert_eq!(sale["onchain_uri"], format!("bitcoin:{}?amount=0.0006", address));
+	let again = store.posd.ok(Method::POST, &format!("/api/v1/sales/{}/onchain", id), till, None).await;
+	assert_eq!(again["onchain_address"], address.as_str(), "a sale keeps its address");
+	let second = onchain_sale(&store, &store.till, 60_000).await;
 	assert_ne!(second["onchain_address"].as_str().unwrap(), address, "each sale has its own address");
 
-	// The payment is in the mempool, and posd's chain source has it. A
-	// cancel now, before the watcher's next look at the address, finds it
-	// and refuses: the customer paid.
-	ctx.bitcoind().fund_addr(&address, sat(60_000)).await;
-	let chain_address = bitcoin::Address::from_str(&address).unwrap().assume_checked();
+	// The customer pays part of it. A long-poll that saw nothing arrive
+	// returns with the part, and the sale stays open for the rest, with the
+	// full amount still in the URI.
+	let waiting = {
+		let url = format!("{}/api/v1/sales/{}?wait=open&onchain_sat=0", store.posd.url, id);
+		let till = store.till.clone();
+		tokio::spawn(async move {
+			reqwest::Client::new().get(url).bearer_auth(till).send().await.unwrap()
+				.json::<Value>().await.unwrap()
+		})
+	};
+	ctx.bitcoind().fund_addr(&address, sat(20_000)).await;
 	let deadline = Instant::now() + SALE_TIMEOUT;
-	while store.posd.app.chain.funds(&chain_address).await.unwrap().pending == Amount::ZERO {
+	let partial = loop {
+		let sale = store.posd.ok(Method::GET, &format!("/api/v1/sales/{}", id), till, None).await;
+		if sale["onchain_pending_sat"] == 20_000 {
+			break sale;
+		}
+		assert!(Instant::now() < deadline, "the till does not see the partial payment: {}", sale);
+		tokio::time::sleep(Duration::from_millis(200)).await;
+	};
+	assert_eq!(partial["state"], "open");
+	assert_eq!(partial["onchain_uri"], format!("bitcoin:{}?amount=0.0006", address));
+	let woken = waiting.await.unwrap();
+	assert_eq!(woken["onchain_pending_sat"], 20_000, "the long-poll returns with the part: {}", woken);
+
+	// The customer paid something, so the cashier cannot cancel.
+	let (status, body) = store.posd.call(Method::POST, &format!("/api/v1/sales/{}/cancel", id), till, None).await;
+	assert_eq!(status, StatusCode::CONFLICT, "{}", body);
+
+	// The rest is in the mempool, and posd's chain source has it. A cancel
+	// now, before the watcher's next look at the address, finds it and
+	// refuses: the customer paid.
+	ctx.bitcoind().fund_addr(&address, sat(40_000)).await;
+	let chain_address = bitcoin::Address::from_str(&address).unwrap().assume_checked();
+	while store.posd.app.chain.funds(&chain_address).await.unwrap().pending < sat(60_000) {
 		assert!(Instant::now() < deadline, "the chain source does not see the payment");
 		tokio::time::sleep(Duration::from_millis(200)).await;
 	}
-	let (status, body) = store.posd.call(Method::POST, &format!("/api/v1/sales/{}/cancel", id),
-		Some(&store.till), None).await;
+	let (status, body) = store.posd.call(Method::POST, &format!("/api/v1/sales/{}/cancel", id), till, None).await;
 	assert_eq!(status, StatusCode::CONFLICT, "{}", body);
 	store.posd.wait_sale_state(&store.till, id, "in-progress", SALE_TIMEOUT).await;
 	ctx.generate_blocks(1).await;
 	let paid = store.posd.wait_sale_state(&store.till, id, "paid", SALE_TIMEOUT).await;
 	assert_eq!(paid["paid_rail"], "onchain");
 	assert_eq!(paid["received_sat"], 60_000);
+	assert_eq!(paid["onchain_received_sat"], 60_000);
+
+	// The owner's wallet learns how far posd went into its descriptor: two
+	// sales took indexes 0 and 1.
+	let owner = store.posd.ok(Method::GET, "/api/v1/owner/store", Some(&store.owner_token), None).await;
+	assert_eq!(owner["next_onchain_index"], 2);
+	assert_eq!(owner["onchain_descriptor"], owner_descriptor());
 }
 
 #[tokio::test]
@@ -395,8 +459,17 @@ async fn pos_pairing_and_lightning_address() {
 	assert_eq!(status, StatusCode::OK, "{}", plain);
 	assert_eq!(plain["store"]["lightning_address"], Value::Null);
 
-	// A payment to the Beta address reaches the first store.
+	// LUD-22: a payer can take the owner's Ark address instead of an
+	// invoice. The store registered no silent payment address, so it offers
+	// none, and asks for one fall back to the next method.
+	assert_eq!(pay_request["payment_methods"], json!(["ARK"]));
+	let owner_store = posd.ok(Method::GET, "/api/v1/owner/store", Some(&store.owner_token), None).await;
 	let callback = pay_request["callback"].as_str().unwrap();
+	let (status, reply) = get(&format!("{}?amount=21000000&payment_method=SP,ARK", callback)).await;
+	assert_eq!(status, StatusCode::OK, "{}", reply);
+	assert_eq!(reply, json!({ "ARK": { "address": owner_store["ark_address"] } }));
+
+	// A payment to the Beta address reaches the first store.
 	assert!(callback.starts_with(&beta), "the callback is on the brand's domain: {}", callback);
 	let (status, invoice) = get(&format!("{}?amount=21000000", callback)).await;
 	assert_eq!(status, StatusCode::OK, "{}", invoice);
@@ -428,6 +501,73 @@ async fn pos_pairing_and_lightning_address() {
 	assert!(body["reason"].as_str().is_some_and(|r| !r.is_empty()));
 	// Other stores and the terminals are not held up.
 	new_sale(&store, json!({ "amount_sat": 1_000 })).await;
+
+	// A store with a silent payment address offers it too. A method posd
+	// does not know is answered with an invoice.
+	let sp = owner_silent_payment_address();
+	let (status, body, _, _) = register_with(&ctx, &store, "owner5", ALPHA, "spcafe", &sp).await;
+	assert_eq!(status, StatusCode::OK, "{}", body);
+	assert_eq!(body["store"]["silent_payment_address"], sp.as_str());
+	let (_, pay_request) = get(&format!("{}/.well-known/lnurlp/spcafe", alpha)).await;
+	assert_eq!(pay_request["payment_methods"], json!(["ARK", "SP"]));
+	let callback = pay_request["callback"].as_str().unwrap();
+	let (_, reply) = get(&format!("{}?amount=21000000&payment_method=SP", callback)).await;
+	assert_eq!(reply, json!({ "SP": { "address": sp } }));
+	let (_, reply) = get(&format!("{}?amount=21000000&payment_method=L-BTC", callback)).await;
+	assert!(reply["pr"].as_str().is_some(), "{}", reply);
+	let (status, _) = get(&format!("{}?amount=1&payment_method=ARK", callback)).await;
+	assert_eq!(status, StatusCode::BAD_REQUEST, "the amount is checked for every method");
+
+	// A silent payment address for another network is refused.
+	let mainnet = sp.replacen("tsp1", "sp1", 1);
+	let (status, _, _, _) = register_with(&ctx, &store, "owner6", ALPHA, "", &mainnet).await;
+	assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+/// A name a store gives up is held for it: a payer who saved the old
+/// address cannot pay another store with it. The store can take it back,
+/// and after the hold anyone can take it.
+#[tokio::test]
+async fn pos_lightning_name_holds() {
+	let ctx = TestContext::new("pos/pos_lightning_name_holds").await;
+	let store = store_setup(&ctx).await;
+	let posd = &store.posd;
+	let owner = Some(store.owner_token.as_str());
+	let alpha = posd.brand_url(ALPHA);
+	let rename = |name: &str| json!({ "lightning_address_name": name });
+
+	posd.ok(Method::PATCH, "/api/v1/owner/store", owner, Some(rename("cafe"))).await;
+	posd.ok(Method::PATCH, "/api/v1/owner/store", owner, Some(rename("bistro"))).await;
+	let (status, _) = get(&format!("{}/.well-known/lnurlp/cafe", alpha)).await;
+	assert_eq!(status, StatusCode::NOT_FOUND, "the old address pays nobody");
+
+	// Nobody else takes the held name: not at registration, not by a
+	// rename, not from the operator.
+	let (status, body, _) = register(&ctx, &store, "squatter", ALPHA, "cafe").await;
+	assert_eq!(status, StatusCode::CONFLICT, "{}", body);
+	let (status, _, other) = register(&ctx, &store, "other", ALPHA, "").await;
+	assert_eq!(status, StatusCode::OK);
+	let (status, _) = posd.call(Method::POST, "/api/v1/admin/lightning-addresses", Some(&admin_token(ALPHA)),
+		Some(json!({ "ark_address": other, "name": "cafe" }))).await;
+	assert_eq!(status, StatusCode::CONFLICT);
+
+	// The store takes it back, which holds the name it leaves.
+	posd.ok(Method::PATCH, "/api/v1/owner/store", owner, Some(rename("cafe"))).await;
+	let (status, _) = get(&format!("{}/.well-known/lnurlp/cafe", alpha)).await;
+	assert_eq!(status, StatusCode::OK);
+	let (status, _, _) = register(&ctx, &store, "squatter2", ALPHA, "bistro").await;
+	assert_eq!(status, StatusCode::CONFLICT);
+
+	// Removing the address holds it too.
+	posd.ok(Method::PATCH, "/api/v1/owner/store", owner, Some(rename(""))).await;
+	let (status, _, _) = register(&ctx, &store, "squatter3", ALPHA, "cafe").await;
+	assert_eq!(status, StatusCode::CONFLICT);
+
+	// After the hold, the name is free.
+	posd.app.db.conn().await.unwrap()
+		.execute("UPDATE held_name SET held_until = NOW() - interval '1 second'", &[]).await.unwrap();
+	let (status, body, _) = register(&ctx, &store, "newcomer", ALPHA, "cafe").await;
+	assert_eq!(status, StatusCode::OK, "{}", body);
 }
 
 /// A brand's operator reserves the names of users moving from another
@@ -515,6 +655,18 @@ async fn register_wallet(
 	brand_key: &str,
 	lightning_address_name: &str,
 ) -> (StatusCode, Value, String, Wallet) {
+	register_with(ctx, store, wallet, brand_key, lightning_address_name, "").await
+}
+
+/// As [register_wallet], with a silent payment address.
+async fn register_with(
+	ctx: &TestContext,
+	store: &Store,
+	wallet: &str,
+	brand_key: &str,
+	lightning_address_name: &str,
+	silent_payment_address: &str,
+) -> (StatusCode, Value, String, Wallet) {
 	let owner = ctx.bark_sdk(wallet, &store.srv).create().await;
 	let address = owner.new_address().await.unwrap();
 	let mut name = format!("{} Cafe", wallet);
@@ -523,6 +675,7 @@ async fn register_wallet(
 		name,
 		ark_address: address.to_string(),
 		onchain_descriptor: owner_descriptor(),
+		silent_payment_address: silent_payment_address.into(),
 		currency: "CRC".into(),
 		brand: brand(brand_key),
 		lightning_address_name: lightning_address_name.into(),
@@ -645,10 +798,13 @@ async fn pos_onchain_addresses_are_unused() {
 	let desc = StoreDescriptor::parse(&owner_descriptor()).unwrap();
 	let address = |i: u32| desc.address(i, Network::Regtest).unwrap().to_string();
 
-	let a = new_sale(&store, json!({ "amount_sat": 60_000 })).await;
+	let a = onchain_sale(&store, &store.till, 60_000).await;
 	assert_eq!(a["onchain_address"], address(0));
-	let b = store.posd.ok(Method::POST, "/api/v1/sales", Some(&second), Some(json!({ "amount_sat": 60_000 }))).await;
+	let b = onchain_sale(&store, &second, 60_000).await;
 	assert_eq!(b["onchain_address"], address(1), "the second store skips the first store's address");
+
+	// A sale the cashier never picked on-chain for takes no address.
+	new_sale(&store, json!({ "amount_sat": 60_000 })).await;
 
 	// The wallet itself received to the next two addresses. A sale skips
 	// them, once the chain source has seen the payments.
@@ -657,7 +813,7 @@ async fn pos_onchain_addresses_are_unused() {
 	ctx.generate_blocks(1).await;
 	let deadline = Instant::now() + SALE_TIMEOUT;
 	loop {
-		let c = new_sale(&store, json!({ "amount_sat": 60_000 })).await;
+		let c = onchain_sale(&store, &store.till, 60_000).await;
 		if c["onchain_address"] == address(4) {
 			break;
 		}
@@ -732,7 +888,7 @@ async fn pos_demo() {
 			if sale["state"] == "open" && sale["device_name"] != "Front till" && paid.insert(id.clone()) {
 				// Give the screen time to show the QR code.
 				tokio::time::sleep(Duration::from_secs(4)).await;
-				let kind = pay(&payer, sale["payment_request"].as_str().unwrap()).await;
+				let kind = pay(&payer, sale["lightning_invoice"].as_str().unwrap()).await;
 				eprintln!("POS_DEMO paid sale {} by {}", id, kind);
 			}
 		}

@@ -57,11 +57,18 @@ describe('PosClient', () => {
 		expect(header(calls[1]!, 'Idempotency-Key')).toBeUndefined()
 	})
 
-	it('long-polls with the known state', async () => {
+	it('long-polls with the known state and on-chain sats', async () => {
 		const { fetch, calls } = fakeFetch([json({ id: 's1', state: 'paid' })])
-		const sale = await new PosClient({ fetch, token: 'tok' }).waitSale('s1', 'open')
+		const sale = await new PosClient({ fetch, token: 'tok' }).waitSale('s1', 'open', 2000)
 		expect(sale.state).toBe('paid')
-		expect(calls[0]!.url).toBe('/api/v1/sales/s1?wait=open')
+		expect(calls[0]!.url).toBe('/api/v1/sales/s1?wait=open&onchain_sat=2000')
+	})
+
+	it('asks for the on-chain address', async () => {
+		const { fetch, calls } = fakeFetch([json({ id: 's1', onchain_address: 'bc1q' })])
+		await new PosClient({ fetch, token: 'tok' }).addOnchain('s1')
+		expect(calls[0]!.url).toBe('/api/v1/sales/s1/onchain')
+		expect(calls[0]!.init.method).toBe('POST')
 	})
 
 	it('pages history with before and limit', async () => {

@@ -7,7 +7,8 @@
 //! - Lightning: a forwarding invoice from a private barkd. A wallet on the
 //!   same Ark server pays it too: the server settles that payment without
 //!   Lightning, at its intra-Ark fees.
-//! - On-chain: an address from the owner's public descriptor.
+//! - On-chain: an address from the owner's public descriptor, made when the
+//!   cashier picks on-chain.
 
 pub mod api;
 pub mod ark_server;
@@ -20,7 +21,9 @@ pub mod money;
 pub mod price;
 pub mod rails;
 pub mod registration;
+pub mod names;
 pub mod sales;
+pub mod silent_payment;
 pub mod token;
 pub mod watcher;
 

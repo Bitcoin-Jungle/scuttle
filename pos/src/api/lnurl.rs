@@ -1,10 +1,14 @@
-//! Lightning address (LUD-06 and LUD-16).
+//! Lightning address (LUD-06 and LUD-16), with LUD-22 payment methods.
 //!
 //! The Ark server cannot put a description hash in an invoice, so the
 //! invoice carries the metadata's text description, not its hash. Wallets
 //! that enforce the LUD-06 hash check refuse these invoices.
+//!
+//! A wallet that supports LUD-22 can ask for the owner's Ark address or
+//! silent payment address instead of an invoice, and pay it directly. Those
+//! payments never pass posd, so they are not in the store's sales.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use axum::Json;
@@ -24,6 +28,29 @@ use crate::sales::{self, SaleAmount};
 
 
 const MIN_SENDABLE_MSAT: u64 = 1_000;
+
+/// The LUD-22 method for the owner's Ark address.
+pub const METHOD_ARK: &str = "ARK";
+/// The LUD-22 method for the owner's silent payment address.
+pub const METHOD_SILENT_PAYMENT: &str = "SP";
+
+/// The LUD-22 methods a store offers besides Lightning.
+fn payment_methods(store: &Store) -> Vec<&'static str> {
+	let mut methods = vec![METHOD_ARK];
+	if store.silent_payment_address.is_some() {
+		methods.push(METHOD_SILENT_PAYMENT);
+	}
+	methods
+}
+
+/// The address of a LUD-22 method, if the store offers it.
+fn method_address<'a>(store: &'a Store, method: &str) -> Option<&'a str> {
+	match method {
+		METHOD_ARK => Some(&store.ark_address),
+		METHOD_SILENT_PAYMENT => store.silent_payment_address.as_deref(),
+		_ => None,
+	}
+}
 
 /// The most unpaid Lightning address invoices a store has open at once.
 /// Asking for invoices needs no credentials, and the watcher checks every
@@ -117,6 +144,13 @@ pub struct PayRequest {
 	max_sendable: u64,
 	/// The LUD-06 metadata, a JSON array as a string.
 	metadata: String,
+	/// LUD-22: the methods besides Lightning that the callback can return
+	/// an address for. `SP` only when the owner registered a silent payment
+	/// address.
+	/// Named as LUD-22 names it, not in the camelCase of LUD-06.
+	#[serde(rename = "payment_methods")]
+	#[schema(example = json!(["ARK", "SP"]))]
+	payment_methods: Vec<&'static str>,
 }
 
 /// The pay request of a Lightning address (LUD-16).
@@ -143,6 +177,7 @@ pub async fn pay_request(
 		min_sendable: MIN_SENDABLE_MSAT,
 		max_sendable: app.cfg.sales.lnurl_max_sat * 1000,
 		metadata: metadata(&store, &brand, &name),
+		payment_methods: payment_methods(&store),
 	}))
 }
 
@@ -150,6 +185,11 @@ pub async fn pay_request(
 pub struct CallbackQuery {
 	/// In msat: whole sats, within the pay request's bounds.
 	amount: u64,
+	/// LUD-22: methods from `payment_methods`, comma-separated, most
+	/// preferred first. The first one the store offers is answered with its
+	/// address; with none, or without the field, the answer is an invoice.
+	#[param(example = "ARK,SP")]
+	payment_method: Option<String>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -162,12 +202,29 @@ pub struct CallbackResponse {
 	routes: Vec<serde_json::Value>,
 }
 
-/// Makes the invoice for a Lightning address payment (LUD-06 callback).
+/// A LUD-22 address, for the amount of the callback.
+#[derive(Serialize, ToSchema)]
+pub struct MethodAddress {
+	#[schema(example = "ark1…")]
+	address: String,
+}
+
+/// An invoice, or with a LUD-22 method an address, keyed by the method:
+/// `{"ARK": {"address": "ark1…"}}`. Tell them apart by their shape.
+#[derive(Serialize, ToSchema)]
+#[serde(untagged)]
+pub enum CallbackReply {
+	Invoice(CallbackResponse),
+	Method(BTreeMap<String, MethodAddress>),
+}
+
+/// Makes the invoice for a Lightning address payment (LUD-06 callback), or
+/// gives the address of a LUD-22 method.
 #[utoipa::path(
 	get, path = "/lnurlp/{name}/callback", tag = "lnurl", security(()),
 	params(("name" = String, Path, description = "The name before the @"), CallbackQuery),
 	responses(
-		(status = 200, description = "The invoice", body = CallbackResponse),
+		(status = 200, description = "The invoice, or the address of a LUD-22 method", body = CallbackReply),
 		(status = 400, description = "The amount is out of range or not whole sats", body = LnurlErrorBody),
 		(status = 404, description = "No such Lightning address on this domain", body = LnurlErrorBody),
 		(status = 429, description = "Too many unpaid invoices are open; try again in a few \
@@ -180,7 +237,7 @@ pub async fn callback(
 	headers: HeaderMap,
 	Path(name): Path<String>,
 	Query(q): Query<CallbackQuery>,
-) -> Result<Json<CallbackResponse>, LnurlError> {
+) -> Result<Json<CallbackReply>, LnurlError> {
 	let (store, _) = store_by_name(&app, &headers, &name).await?;
 	if q.amount < MIN_SENDABLE_MSAT || q.amount > app.cfg.sales.lnurl_max_sat * 1000 {
 		return Err(bad_request("the amount is out of range").into());
@@ -188,8 +245,14 @@ pub async fn callback(
 	if q.amount % 1000 != 0 {
 		return Err(bad_request("the amount must be whole sats").into());
 	}
+	let method = q.payment_method.as_deref().unwrap_or("").split(',').map(str::trim)
+		.find_map(|m| method_address(&store, m).map(|a| (m, a)));
+	if let Some((method, address)) = method {
+		let reply = BTreeMap::from([(method.to_string(), MethodAddress { address: address.to_string() })]);
+		return Ok(Json(CallbackReply::Method(reply)));
+	}
 	let _slot = app.lnurl_pending.reserve(&app, store.id).await?;
 	let amount = SaleAmount::Sat(Amount::from_sat(q.amount / 1000));
-	let sale = sales::create_sale(&app, &store, None, amount, None, None, true, None).await?;
-	Ok(Json(CallbackResponse { pr: sale.lightning_invoice, routes: vec![] }))
+	let sale = sales::create_sale(&app, &store, None, amount, None, None, None).await?;
+	Ok(Json(CallbackReply::Invoice(CallbackResponse { pr: sale.lightning_invoice, routes: vec![] })))
 }

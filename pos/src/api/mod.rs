@@ -80,6 +80,7 @@ fn documented() -> OpenApiRouter<Arc<App>> {
 		.routes(routes!(terminal::sales_csv))
 		.routes(routes!(terminal::get_sale))
 		.routes(routes!(terminal::cancel_sale))
+		.routes(routes!(terminal::add_onchain))
 		.routes(routes!(owner::register))
 		.routes(routes!(owner::challenge))
 		.routes(routes!(owner::login))
@@ -237,6 +238,40 @@ impl StoreView {
 				.zip(app.cfg.brand(&store.brand))
 				.map(|(n, brand)| format!("{}@{}", n, brand.host())),
 			brand: store.brand.clone(),
+		}
+	}
+}
+
+/// How a store looks to its owner: what a terminal sees, and what the
+/// owner's wallet needs to keep its accounts in step with posd.
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+pub struct OwnerStoreView {
+	#[serde(flatten)]
+	pub store: StoreView,
+	/// The registered Ark address, whose key owns the store.
+	#[schema(example = "ark1…")]
+	pub ark_address: String,
+	#[schema(example = "tr([fingerprint/86'/0'/1']xpub…/0/*)")]
+	pub onchain_descriptor: String,
+	/// The next derivation index posd gives a sale from `onchain_descriptor`.
+	/// Every index below it may have been shown to a payer: a wallet that
+	/// restores the account scans at least that far, and gives none of
+	/// those addresses out for its own receives.
+	#[schema(example = 12)]
+	pub next_onchain_index: i64,
+	/// `null` when the owner registered none.
+	#[schema(example = "sp1q…")]
+	pub silent_payment_address: Option<String>,
+}
+
+impl OwnerStoreView {
+	pub fn new(app: &App, store: &Store) -> OwnerStoreView {
+		OwnerStoreView {
+			store: StoreView::new(app, store),
+			ark_address: store.ark_address.clone(),
+			onchain_descriptor: store.onchain_descriptor.clone(),
+			next_onchain_index: store.next_onchain_index,
+			silent_payment_address: store.silent_payment_address.clone(),
 		}
 	}
 }

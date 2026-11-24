@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Sale } from './api'
-import { countdown, isLive, lightningQr, onchainQr, onchainUri, railLabel, receiptNumber, saleAmountLabel, stateLabel, stateShortLabel, stateTone } from './sale'
+import { countdown, isLive, lightningQr, onchainQr, partialPayment, railLabel, receiptNumber, saleAmountLabel, stateLabel, stateShortLabel, stateTone } from './sale'
 
 function sale(overrides: Partial<Sale> = {}): Sale {
 	return {
@@ -13,9 +13,12 @@ function sale(overrides: Partial<Sale> = {}): Sale {
 		currency: 'USD',
 		btc_price: '62500.00',
 		memo: null,
-		payment_request: 'bitcoin:?lightning=lnbc1',
 		lightning_invoice: 'lnbc1',
+		onchain_available: true,
 		onchain_address: null,
+		onchain_uri: null,
+		onchain_received_sat: 0,
+		onchain_pending_sat: 0,
 		paid_at: null,
 		paid_rail: null,
 		received_sat: 0,
@@ -69,22 +72,24 @@ describe('payment QR codes', () => {
 		expect(lightningQr(sale({ lightning_invoice: 'lnbc200u1pabc' }))).toBe('LNBC200U1PABC')
 	})
 
-	it('drops the invoice from the on-chain URI and upper-cases a bech32 address', () => {
-		const s = sale({
-			onchain_address: 'bc1qxyz',
-			payment_request: 'bitcoin:bc1qxyz?amount=0.0008&lightning=lnbc1',
-		})
+	it('upper-cases the on-chain QR of a bech32 address', () => {
+		const s = sale({ onchain_address: 'bc1qxyz', onchain_uri: 'bitcoin:bc1qxyz?amount=0.0008' })
 		expect(onchainQr(s)).toBe('BITCOIN:BC1QXYZ?amount=0.0008')
-		expect(onchainUri(s)).toBe('bitcoin:bc1qxyz?amount=0.0008')
 	})
 
 	it('keeps the case of a base58 address', () => {
-		const s = sale({ onchain_address: '3Abc', payment_request: 'bitcoin:3Abc?amount=0.001&lightning=lnbc1' })
+		const s = sale({ onchain_address: '3Abc', onchain_uri: 'bitcoin:3Abc?amount=0.001' })
 		expect(onchainQr(s)).toBe('BITCOIN:3Abc?amount=0.001')
 	})
 
-	it('has no on-chain code without an address', () => {
+	it('has no on-chain QR before the cashier picks on-chain', () => {
 		expect(onchainQr(sale())).toBeNull()
-		expect(onchainUri(sale())).toBeNull()
+	})
+
+	it('reports a partial on-chain payment of an open sale', () => {
+		expect(partialPayment(sale())).toBeNull()
+		expect(partialPayment(sale({ onchain_pending_sat: 5000, onchain_received_sat: 10000 }))).toEqual({ seen: 15000, owed: 20000 })
+		expect(partialPayment(sale({ onchain_pending_sat: 35000 }))).toBeNull()
+		expect(partialPayment(sale({ state: 'expired', onchain_received_sat: 10000 }))).toBeNull()
 	})
 })

@@ -13,9 +13,17 @@ export interface Sale {
 	currency: string | null
 	btc_price: string | null
 	memo: string | null
-	payment_request: string
 	lightning_invoice: string
+	/** The sale can be paid on-chain; the address comes with addOnchain. */
+	onchain_available: boolean
+	/** Null until the cashier picks on-chain. */
 	onchain_address: string | null
+	/** The address and the full amount as a BIP 21 URI, null with the address. */
+	onchain_uri: string | null
+	/** Confirmed to the on-chain address so far. */
+	onchain_received_sat: number
+	/** In the mempool to the on-chain address. */
+	onchain_pending_sat: number
 	paid_at: string | null
 	paid_rail: PaidRail | null
 	received_sat: number
@@ -117,10 +125,19 @@ export class PosClient {
 		return this.json('GET', `/api/v1/sales/${encodeURIComponent(id)}`, undefined, { signal })
 	}
 
-	/** Returns when the sale is no longer in `state`, or after the server's wait limit. */
-	waitSale(id: string, state: SaleState, signal?: AbortSignal): Promise<Sale> {
-		const path = `/api/v1/sales/${encodeURIComponent(id)}?wait=${encodeURIComponent(state)}`
+	/**
+	 * Returns when the sale is no longer in `state`, or when the sats seen
+	 * on-chain are no longer `onchainSat`, or after the server's wait limit.
+	 */
+	waitSale(id: string, state: SaleState, onchainSat: number, signal?: AbortSignal): Promise<Sale> {
+		const q = new URLSearchParams({ wait: state, onchain_sat: String(onchainSat) })
+		const path = `/api/v1/sales/${encodeURIComponent(id)}?${q}`
 		return this.json('GET', path, undefined, { timeoutMs: WAIT_TIMEOUT_MS, signal })
+	}
+
+	/** Gives the sale its on-chain address, when the cashier picks on-chain. */
+	addOnchain(id: string): Promise<Sale> {
+		return this.json('POST', `/api/v1/sales/${encodeURIComponent(id)}/onchain`)
 	}
 
 	cancelSale(id: string): Promise<Sale> {

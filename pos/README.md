@@ -19,8 +19,9 @@ server's pool, so their expiry does not depend on the payer's VTXOs.
 The terminal shows one rail's QR code at a time, Lightning first, so the
 code stays sparse enough for cheap phones to scan off a low-resolution
 screen: the bare invoice or a BIP 21 address and amount, in upper case for
-the QR's alphanumeric mode. The API also returns the BIP 321 URI of both
-(`payment_request`) for clients that want one code.
+the QR's alphanumeric mode. The on-chain address is made only when the
+cashier picks on-chain, so the owner's descriptor is not used up by sales
+paid by Lightning. A partial on-chain payment shows at the till.
 
 The API is in [docs/api.md](docs/api.md), with the generated OpenAPI document
 in [openapi.json](openapi.json).
@@ -96,6 +97,7 @@ ordinary message signing (`Wallet::sign_message`, or `POST
 sale. The registration carries:
 - the Ark address that receives the payments;
 - the public descriptor of the on-chain account that the host app keeps;
+- optionally, the owner's BIP 352 silent payment address;
 - the store currency;
 - the key of the store's brand.
 
@@ -116,6 +118,9 @@ cd pos/web && npm test && npm run check
 - **Lightning address:** the Ark server cannot put a description hash in an
   invoice. Wallets that enforce the LUD-06 metadata hash refuse Lightning
   address invoices from posd.
+- **LUD-22 payments:** a payer that takes the owner's Ark or silent payment
+  address from the Lightning address pays the owner directly. posd never
+  sees those payments, so they are not in the store's sales.
 - **Fees:** the owner pays the Ark server's Lightning receive fee on a sale
   paid from outside the Ark, and its intra-Ark receive fee on a sale paid
   from the same Ark server.

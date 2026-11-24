@@ -50,8 +50,8 @@ cli -named createwallet wallet_name=owner-onchain >/dev/null 2>&1 || true
 descriptor=$(cli -rpcwallet=owner-onchain listdescriptors \
 	| jq -r '[.descriptors[] | select(.desc | startswith("tr(")) | select(.internal == false)][0].desc')
 ts=$(date +%s)
-msg=$(printf 'posd registration v1\nname:%s\nark_address:%s\nonchain_descriptor:%s\ncurrency:%s\nbrand:%s\nlightning_address_name:%s\ntimestamp:%s' \
-	"Smoke Cafe" "$address" "$descriptor" CRC bitcoinjungle "" "$ts")
+msg=$(printf 'posd registration v1\nname:%s\nark_address:%s\nonchain_descriptor:%s\nsilent_payment_address:%s\ncurrency:%s\nbrand:%s\nlightning_address_name:%s\ntimestamp:%s' \
+	"Smoke Cafe" "$address" "$descriptor" "" CRC bitcoinjungle "" "$ts")
 sig=$(bark owner message sign "$msg" "$address" | jq -r .signature)
 reg=$(jq -n --arg a "$address" --arg d "$descriptor" --argjson t "$ts" --arg s "$sig" \
 	'{registration: {name: "Smoke Cafe", ark_address: $a, onchain_descriptor: $d, currency: "CRC", brand: "bitcoinjungle", timestamp: $t}, signature: $s}')

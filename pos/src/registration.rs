@@ -28,6 +28,12 @@ pub struct Registration {
 	/// The public descriptor of the on-chain account the host app keeps.
 	#[schema(example = "tr([fingerprint/86'/0'/1']xpub…/0/*)")]
 	pub onchain_descriptor: String,
+	/// The owner's BIP 352 silent payment address, which the store's
+	/// Lightning address offers to payers that support it. Empty or absent
+	/// for none.
+	#[serde(default)]
+	#[schema(example = "sp1q…")]
+	pub silent_payment_address: String,
 	/// A currency posd's price source quotes, such as `USD` or `CRC`.
 	#[schema(example = "CRC")]
 	pub currency: String,
@@ -63,16 +69,18 @@ impl Registration {
 	/// per field, joined by `\n`, with no trailing newline.
 	pub fn message(&self) -> String {
 		format!(
-			"{}\nname:{}\nark_address:{}\nonchain_descriptor:{}\ncurrency:{}\nbrand:{}\n\
-			lightning_address_name:{}\ntimestamp:{}",
+			"{}\nname:{}\nark_address:{}\nonchain_descriptor:{}\nsilent_payment_address:{}\n\
+			currency:{}\nbrand:{}\nlightning_address_name:{}\ntimestamp:{}",
 			REGISTRATION_HEADER, self.name, self.ark_address, self.onchain_descriptor,
-			self.currency, self.brand, self.lightning_address_name, self.timestamp,
+			self.silent_payment_address, self.currency, self.brand, self.lightning_address_name,
+			self.timestamp,
 		)
 	}
 
 	/// Checks the fields, that the address is for the Ark server with
 	/// `server_pubkey`, and the signature. The service checks the
-	/// timestamp, the descriptor and the currency itself.
+	/// timestamp, the descriptor, the silent payment address and the
+	/// currency itself.
 	pub fn verify(
 		&self,
 		signature: &schnorr::Signature,
@@ -90,7 +98,11 @@ impl Registration {
 			}
 		}
 		// A line break would let one field pose as another.
-		for (field, value) in fields.into_iter().chain([("lightning_address_name", &self.lightning_address_name)]) {
+		let optional = [
+			("silent_payment_address", &self.silent_payment_address),
+			("lightning_address_name", &self.lightning_address_name),
+		];
+		for (field, value) in fields.into_iter().chain(optional) {
 			if value.contains(['\n', '\r']) {
 				return Err(RegistrationError::LineBreak(field));
 			}
@@ -118,6 +130,7 @@ mod test {
 			name: "Corner Café".into(),
 			ark_address: "tark1placeholder".into(),
 			onchain_descriptor: "tr(xpub/0/*)".into(),
+			silent_payment_address: "sp1qplaceholder".into(),
 			currency: "CRC".into(),
 			brand: "example".parse().unwrap(),
 			lightning_address_name: "cornercafe".into(),
@@ -129,10 +142,15 @@ mod test {
 	fn message_format() {
 		assert_eq!(registration().message(),
 			"posd registration v1\nname:Corner Café\nark_address:tark1placeholder\n\
-			onchain_descriptor:tr(xpub/0/*)\ncurrency:CRC\nbrand:example\n\
-			lightning_address_name:cornercafe\ntimestamp:1795190400",
+			onchain_descriptor:tr(xpub/0/*)\nsilent_payment_address:sp1qplaceholder\n\
+			currency:CRC\nbrand:example\nlightning_address_name:cornercafe\ntimestamp:1795190400",
 		);
-		let none = Registration { lightning_address_name: String::new(), ..registration() };
+		let none = Registration {
+			silent_payment_address: String::new(),
+			lightning_address_name: String::new(),
+			..registration()
+		};
+		assert!(none.message().contains("\nsilent_payment_address:\ncurrency:"));
 		assert!(none.message().contains("\nlightning_address_name:\ntimestamp:"));
 	}
 
@@ -143,6 +161,9 @@ mod test {
 		let mut reg = registration();
 		reg.name = "a\ncurrency:x".into();
 		assert_eq!(reg.verify(&sig, server), Err(RegistrationError::LineBreak("name")));
+		let mut reg = registration();
+		reg.silent_payment_address = "sp1q\ncurrency:x".into();
+		assert_eq!(reg.verify(&sig, server), Err(RegistrationError::LineBreak("silent_payment_address")));
 		let mut reg = registration();
 		reg.currency = String::new();
 		assert_eq!(reg.verify(&sig, server), Err(RegistrationError::Empty("currency")));

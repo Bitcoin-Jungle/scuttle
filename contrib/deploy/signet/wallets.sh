@@ -119,7 +119,7 @@ get_sale() { api GET "/api/v1/sales/$1" "$(till_token)"; }
 
 show_sale() {
 	jq '{id, state, amount_sat, fiat_amount, currency, memo, received_sat, paid_rail, paid_at,
-		expires_at, device_name, onchain_address, payment_request}'
+		expires_at, device_name, onchain_available, onchain_uri, onchain_received_sat, onchain_pending_sat}'
 }
 
 # A query parameter of a BIP 321 URI.
@@ -186,8 +186,8 @@ register)
 	wallet=$(jq -r .wallet <<<"$sw")
 	descriptor=$(jq -r .onchain_descriptor <<<"$sw")
 	ts=$(date +%s)
-	msg=$(printf 'posd registration v1\nname:%s\nark_address:%s\nonchain_descriptor:%s\ncurrency:%s\nbrand:%s\nlightning_address_name:%s\ntimestamp:%s' \
-		"$name" "$address" "$descriptor" "$currency" "$brand" "$lnname" "$ts")
+	msg=$(printf 'posd registration v1\nname:%s\nark_address:%s\nonchain_descriptor:%s\nsilent_payment_address:%s\ncurrency:%s\nbrand:%s\nlightning_address_name:%s\ntimestamp:%s' \
+		"$name" "$address" "$descriptor" "" "$currency" "$brand" "$lnname" "$ts")
 	sig=$(bark owner message sign "$msg" "$address" | jq -r .signature)
 	api POST /api/v1/stores "" "$(jq -n --arg n "$name" --arg a "$address" \
 		--arg d "$descriptor" --arg c "$currency" --arg br "$brand" --arg ln "$lnname" --argjson t "$ts" --arg s "$sig" \
@@ -286,7 +286,7 @@ csv)
 	;;
 qr)
 	command -v qrencode >/dev/null || die "install qrencode"
-	get_sale "$(sale_id "${1:-}")" | jq -r .payment_request | qrencode -t ansiutf8
+	get_sale "$(sale_id "${1:-}")" | jq -r .lightning_invoice | qrencode -t ansiutf8
 	;;
 
 # Customer
@@ -304,8 +304,12 @@ pay)
 		echo "fee paid: $(( before - after - $(jq -r .amount_sat <<<"$sale") )) sat"
 		;;
 	onchain)
+		# As the cashier picking on-chain: the sale gets its address now.
+		[ "$(jq -r .onchain_available <<<"$sale")" = true ] \
+			|| die "no on-chain: the sale is below the store's on-chain minimum"
+		sale=$(api POST "/api/v1/sales/$id/onchain" "$(till_token)")
 		addr=$(jq -r '.onchain_address // empty' <<<"$sale")
-		[ -n "$addr" ] || die "no on-chain address: the sale is below the store's on-chain minimum"
+		[ -n "$addr" ] || die "posd gave no on-chain address"
 		bark "$who" onchain send "$addr" "$(jq -r .amount_sat <<<"$sale") sats" | jq -c . \
 			|| die "on-chain payment failed: does the wallet have on-chain coins? (faucet)"
 		echo "sent; the sale is in progress until 'mine 1'"

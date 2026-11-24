@@ -93,26 +93,30 @@ export function lightningQr(sale: Sale): string {
 }
 
 /**
- * The on-chain payment as a BIP 21 URI with the address and amount only,
- * as wallets expect it pasted or shared, or null when the sale does not
- * offer on-chain.
- */
-export function onchainUri(sale: Sale): string | null {
-	if (!sale.onchain_address) return null
-	const query = sale.payment_request.split('?')[1] ?? ''
-	const amount = new URLSearchParams(query).get('amount')
-	return `bitcoin:${sale.onchain_address}${amount ? `?amount=${amount}` : ''}`
-}
-
-/**
- * The on-chain QR: onchainUri with the scheme in upper case, and a bech32
- * address too. A base58 address is case-sensitive and kept.
+ * The on-chain QR: the BIP 21 URI with the scheme in upper case, and a
+ * bech32 address too. A base58 address is case-sensitive and kept. Null
+ * until the sale has its address.
  */
 export function onchainQr(sale: Sale): string | null {
-	const uri = onchainUri(sale)
+	const uri = sale.onchain_uri
 	if (!uri || !sale.onchain_address) return null
 	const address = /^(bc|tb|bcrt)1/i.test(sale.onchain_address)
 		? sale.onchain_address.toUpperCase()
 		: sale.onchain_address
 	return `BITCOIN:${address}${uri.slice(`bitcoin:${sale.onchain_address}`.length)}`
+}
+
+/** The sats seen on the sale's address, confirmed or in the mempool. */
+export function onchainSeen(sale: Sale): number {
+	return sale.onchain_received_sat + sale.onchain_pending_sat
+}
+
+/**
+ * Part of the amount arrived on-chain, and the rest is still to pay: the
+ * sats seen and the sats owed, or null.
+ */
+export function partialPayment(sale: Sale): { seen: number; owed: number } | null {
+	const seen = onchainSeen(sale)
+	if (sale.state !== 'open' || seen === 0 || seen >= sale.amount_sat) return null
+	return { seen, owed: sale.amount_sat - seen }
 }
