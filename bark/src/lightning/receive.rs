@@ -12,7 +12,7 @@ use ark::lightning::{Bolt11InvoiceExt, Preimage, PaymentHash};
 use crate::Wallet;
 use crate::actions::{DriveMode, WalletAction};
 use crate::actions::lightning::receive::{
-	Htlcs, LightningReceive, LightningReceiveState, Progress,
+	Htlcs, LightningReceive, LightningReceiveNotFound, LightningReceiveState, Progress,
 	ln_recv_action_id, start_lightning_receive
 };
 use crate::movement::MovementStatus;
@@ -95,6 +95,10 @@ impl<'a> Bolt11InvoiceBuilder<'a> {
 	/// are already theirs. Forwarding through a third party means trusting
 	/// it to eventually come back online and deliver, not trusting it with
 	/// custody.
+	///
+	/// A server in expiry payout mode pays an expired HTLC VTXO to this
+	/// wallet before the claim, and an expired claim output to the mailbox
+	/// of `claim_destination`.
 	pub fn claim_destination(mut self, claim_destination: impl Into<Option<ark::Address>>) -> Self {
 		self.claim_destination = claim_destination.into();
 		self
@@ -174,8 +178,9 @@ impl Wallet {
 	pub async fn lightning_receive_checkpoint(&self, hash: PaymentHash)
 		-> anyhow::Result<Option<LightningReceive>>
 	{
-		Ok(self.inner.db.get_wallet_action_checkpoint(&ln_recv_action_id(hash)).await?
-			.and_then(|cp| cp.into_lightning_receive()))
+		self.inner.db.get_wallet_action_checkpoint(&ln_recv_action_id(hash)).await?
+			.map(|cp| cp.into_lightning_receive().context("invalid checkpoint for Lightning receive"))
+			.transpose()
 	}
 
 	/// Look up the preimage for a receive by payment hash, for witnessing
@@ -204,7 +209,12 @@ impl Wallet {
 		if let Some(cp) = self.lightning_receive_checkpoint(hash).await? {
 			return Ok(LightningReceiveState::InProgress(cp));
 		}
-		bail!("no pending lightning receive found for this payment hash");
+		// The receive can settle between the two reads. It writes its settled
+		// record before it removes its checkpoint, so read the record again.
+		if let Some(settled) = self.inner.db.get_settled_lightning_receive(hash).await? {
+			return Ok(LightningReceiveState::Settled(settled));
+		}
+		Err(LightningReceiveNotFound.into())
 	}
 
 	/// Create, store and return a [`Bolt11Invoice`] for an incoming
@@ -289,13 +299,24 @@ impl Wallet {
 
 		match recv.progress {
 			Progress::AwaitingPayment => {
-				// Best-effort server cancel: an abandoned hold invoice just
-				// expires server-side, so don't fail the local cancel on error.
-				if let Ok((mut srv, _)) = self.require_server().await {
-					if let Err(e) = srv.client.cancel_lightning_receive(
-						protos::CancelLightningReceiveRequest { payment_hash: hash.to_vec() },
-					).await {
-						warn!("server did not cancel lightning receive {}: {}", hash, e);
+				// Keep an in-flight receive when the issuer refuses cancellation.
+				let (mut srv, _) = self.require_server().await
+					.context("cannot cancel: the Ark server is unreachable")?;
+				if let Err(e) = srv.client.cancel_lightning_receive(
+					protos::CancelLightningReceiveRequest { payment_hash: hash.to_vec() },
+				).await {
+					warn!("server did not cancel lightning receive {}: {}", hash, e);
+					let status = srv.client.check_lightning_receive(protos::CheckLightningReceiveRequest {
+						hash: hash.to_vec(),
+						wait: false,
+					}).await.context("cannot cancel: failed to read the receive from the Ark server")?
+						.into_inner().status;
+					if status != protos::LightningReceiveStatus::Created as i32 {
+						let status = protos::LightningReceiveStatus::try_from(status)
+							.map(|s| s.as_str_name()).unwrap_or("UNKNOWN");
+						bail!("cannot cancel: the Ark server did not cancel the receive and reports it {}",
+							status,
+						);
 					}
 				}
 				checkpoint.finish(self).await

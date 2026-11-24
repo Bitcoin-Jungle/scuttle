@@ -32,6 +32,8 @@ pub enum ArkoorAddressError {
 	PolicyNotSupported(VtxoPolicy),
 	#[error("Unknown delivery mechanism: {0}")]
 	UnknownDeliveryMechanism(String),
+	#[error("Address must have one server mailbox delivery")]
+	MailboxDeliveryRequired,
 	#[error("Other error: {0}")]
 	Other(String),
 }
@@ -186,6 +188,13 @@ impl Wallet {
 		}
 
 		check_delivery(address.delivery())?;
+		// A server in expiry payout mode binds the output to the mailbox of
+		// the address.
+		if self.expiry_payouts().await
+			&& !matches!(address.delivery(), [VtxoDelivery::ServerMailbox { .. }])
+		{
+			return Err(ArkoorAddressError::MailboxDeliveryRequired);
+		}
 
 		Ok(())
 	}
@@ -203,6 +212,7 @@ impl Wallet {
 		inputs: impl IntoIterator<Item = WalletVtxo>,
 		change_keypair: Keypair,
 		change_pieces: Option<Vec<Amount>>,
+		destination_address: Option<&ark::Address>,
 	) -> anyhow::Result<ArkoorCreateResult> {
 		let (mut srv, _) = self.require_server().await?;
 		let input_ids = inputs.into_iter().map(|v| v.id()).collect::<Vec<_>>();
@@ -252,9 +262,10 @@ impl Wallet {
 			.generate_user_nonces(&user_keypairs)
 			.context("invalid nb of keypairs")?;
 
-		let cosign_request = protos::ArkoorPackageCosignRequest::from(
+		let mut cosign_request = protos::ArkoorPackageCosignRequest::from(
 			builder.cosign_request(),
 		);
+		self.bind_output_mailboxes(&mut cosign_request.parts, destination_address).await?;
 
 		let response = srv.client.request_arkoor_cosign(cosign_request).await
 			.context("error requesting arkoor cosign")?

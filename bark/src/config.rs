@@ -253,6 +253,12 @@ pub struct Config {
 	///
 	/// Default value: 250
 	pub vtxo_key_gap_limit: u32,
+
+	/// Open the wallet only with an Ark server in expiry payout mode.
+	///
+	/// Default value: false
+	#[serde(default)]
+	pub require_expiry_payouts: bool,
 }
 
 impl Config {
@@ -286,6 +292,7 @@ impl Config {
 			daemon_manual_sync: false,
 			change_vtxo_split_factor: 2,
 			vtxo_key_gap_limit: DEFAULT_VTXO_KEY_GAP_LIMIT,
+			require_expiry_payouts: false,
 		};
 
 		if network != Network::Bitcoin {

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use futures::StreamExt;
@@ -5,6 +7,7 @@ use futures::StreamExt;
 use ark::lightning::{PaymentHash, Preimage};
 use bitcoin_ext::BlockDelta;
 use ark_testing::{TestContext, btc, util::{FutureExt, poll_interval}};
+use ark_testing::daemon::captaind::{self, ArkClient};
 use ark_testing::balance::assert_balance_consistent;
 
 use bark::actions::lightning::pay::LightningSendState;
@@ -14,6 +17,7 @@ use bark::subsystem::Subsystem;
 use bark::LightningSendOptions;
 use cln_rpc::plugins::hold;
 use server::database::Db;
+use server_rpc::protos;
 use server_rpc::protos::mailbox_server::mailbox_message::Message as MailboxMsg;
 
 /// Wait until the hold plugin holds the payment's HTLCs. The invoice turns
@@ -483,4 +487,93 @@ async fn pay_with_retry_for() {
 		).await.expect("db read").expect("payment attempt");
 		assert_eq!(attempt.retry_for, Some(expected));
 	}
+}
+
+/// Holds the reply to the first receive claim forever, after the server
+/// handled the claim.
+#[derive(Clone)]
+struct LoseClaimReply {
+	hold: Arc<AtomicBool>,
+	arrived: Arc<tokio::sync::Notify>,
+	requests: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl captaind::proxy::ArkRpcProxy for LoseClaimReply {
+	async fn claim_lightning_receive(
+		&self, upstream: &mut ArkClient, request: protos::ClaimLightningReceiveRequest,
+	) -> Result<protos::ArkoorPackageCosignResponse, tonic::Status> {
+		self.requests.fetch_add(1, Ordering::SeqCst);
+		let response = upstream.claim_lightning_receive(request).await?.into_inner();
+		if self.hold.swap(false, Ordering::SeqCst) {
+			self.arrived.notify_one();
+			std::future::pending::<()>().await;
+		}
+		Ok(response)
+	}
+}
+
+/// With a payout server the wallet stores that it revealed the preimage of
+/// a receive before it sends the claim. When the reply is lost and the
+/// wallet stops, it claims again after it opens, and credits the receive
+/// once.
+#[tokio::test]
+async fn receive_claim_survives_a_lost_reply() {
+	let ctx = TestContext::new("bark_sdk/receive_claim_survives_a_lost_reply").await;
+	let lightning = ctx.new_lightning_setup("lightningd").await;
+	let srv = ctx.captaind("server").lightningd(&lightning.internal).funded(btc(10))
+		.cfg(|cfg| cfg.expiry_payouts = true).create().await;
+	srv.wait_for_vtxopool(&ctx).await;
+	let gate = LoseClaimReply {
+		hold: Arc::new(AtomicBool::new(true)),
+		arrived: Arc::new(tokio::sync::Notify::new()),
+		requests: Arc::new(AtomicUsize::new(0)),
+	};
+	let proxy = srv.start_proxy_no_mailbox(gate.clone()).await;
+	let mnemonic = bip39::Mnemonic::generate(12).unwrap();
+	let wallet = ctx.bark_sdk("receiver", &proxy).mnemonic(mnemonic.clone())
+		.cfg(|cfg| cfg.daemon_manual_sync = true).create().await;
+	lightning.sync().await;
+	let amount = btc(0.5);
+	let invoice = wallet.bolt11_invoice(amount, None, None).await.unwrap();
+	let hash = PaymentHash::from(&invoice);
+	let mut mailbox = wallet.subscribe_mailbox_messages(None).await.unwrap();
+	let (paid, checkpoint) = tokio::join!(lightning.external.try_pay_bolt11(invoice.to_string()), async {
+		loop {
+			let message = mailbox.next().wait_millis(10_000).await.unwrap().unwrap();
+			if let Some(MailboxMsg::IncomingLightningPayment(message)) = message.message {
+				assert_eq!(message.payment_hash, hash.to_vec());
+				break;
+			}
+		}
+		let mut claim = Box::pin(wallet.try_claim_lightning_receive(hash, false));
+		tokio::select! {
+			result = &mut claim => panic!("the claim finished without its reply: {result:?}"),
+			_ = gate.arrived.notified().wait_millis(30_000) => {},
+		}
+		let checkpoint = wallet.lightning_receive_checkpoint(hash).await.unwrap().unwrap();
+		assert!(futures::poll!(&mut claim).is_pending());
+		drop(claim);
+		checkpoint
+	});
+	paid.unwrap();
+	assert!(matches!(&checkpoint.progress, bark::actions::lightning::receive::Progress::PreimageRevealed(_)),
+		"the revealed preimage is stored before the claim");
+	drop(mailbox);
+	wallet.stop_daemon_wait().await.unwrap();
+	drop(wallet);
+
+	let reopened = ctx.bark_sdk("receiver", &proxy).mnemonic(mnemonic)
+		.cfg(|cfg| cfg.daemon_manual_sync = true).create().await;
+	assert!(reopened.lightning_receive_checkpoint(hash).await.unwrap() == Some(checkpoint));
+	assert!(matches!(reopened.try_claim_lightning_receive(hash, true).await.unwrap(), LightningReceiveState::Settled(_)));
+	assert!(gate.requests.load(Ordering::SeqCst) >= 2, "the wallet claims again");
+	assert!(reopened.lightning_receive_checkpoint(hash).await.unwrap().is_none());
+	let balance = assert_balance_consistent(&reopened, false).await;
+	assert_eq!(balance.spendable, amount);
+	let receives = reopened.history().await.unwrap().into_iter()
+		.filter(|movement| movement.subsystem.is_subsystem(Subsystem::LIGHTNING_RECEIVE)).collect::<Vec<_>>();
+	assert_eq!(receives.len(), 1, "the receive is credited once");
+	assert_eq!((receives[0].status, receives[0].effective_balance),
+		(MovementStatus::Successful, amount.to_signed().unwrap()));
 }

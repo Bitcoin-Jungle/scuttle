@@ -15,7 +15,7 @@ use ark::vtxo::{Full, VtxoId, Vtxo};
 
 use crate::Wallet;
 use crate::actions::{
-	Advance, AdvanceError, IntoAdvanceResult, RetryUnlessRejected, WalletAction,
+	or_retry, Advance, AdvanceError, IntoAdvanceResult, RetryUnlessRejected, WalletAction,
 	WalletActionCheckpoint, WalletActionId,
 };
 use crate::arkoor::{post_arkoor_to_mailboxes, split_change_amount, DeliveryOutcome};
@@ -44,6 +44,12 @@ pub struct ArkoorSend {
 	/// pre-split bark, meaning one whole change output.
 	#[serde(default, with = "crate::utils::serde::opt_amount_vec_sat")]
 	pub change_pieces: Option<Vec<Amount>>,
+
+	// Older checkpoints could bind the co-signature to an invoice. Never
+	// resume one of those as an ordinary transfer. Unit accepts an absent
+	// or null legacy field and rejects a populated one during decoding.
+	#[serde(default, rename = "paid_invoice", skip_serializing)]
+	legacy_invoice: (),
 
 	// Mutable state:
 	pub progress: Progress,
@@ -181,7 +187,14 @@ impl WalletAction for ArkoorSend {
 
 	/// The step can't be completed as-is: the server rejected the request
 	/// or our own state is inconsistent.
-	async fn on_abort(self, _wallet: &Wallet, error: anyhow::Error) -> Advance<Self> {
+	async fn on_abort(self, wallet: &Wallet, error: anyhow::Error) -> Advance<Self> {
+		let refunded = match &self.progress {
+			Progress::Registration { signed_destination_vtxos, .. } => {
+				or_retry!(self, wallet.is_refunded_arkoor(signed_destination_vtxos).await)
+			},
+			_ => false,
+		};
+
 		match self.progress {
 			// Nothing happened server-side, so the inputs go back to spendable
 			// when the executor tears the action down.
@@ -199,6 +212,18 @@ impl WalletAction for ArkoorSend {
 			Progress::Registration {
 				movement_id, signed_destination_vtxos, signed_change_vtxos,
 			} => {
+				// The server refunds the outputs to the sender on-chain, so the
+				// recipient gets nothing. The next sync marks the change spent.
+				if refunded {
+					return Advance::Next(ArkoorSend {
+						progress: Progress::Finalizing {
+							movement_id,
+							signed_change_vtxos,
+							delivery_succeeded: false,
+						},
+						..self
+					});
+				}
 				Advance::Next(ArkoorSend {
 					progress: Progress::Delivery {
 						movement_id,
@@ -269,6 +294,7 @@ pub(crate) async fn start_arkoor_send(
 		change_pieces: Some(split_change_amount(
 			change, amount, wallet.config().change_vtxo_split_factor,
 		)),
+		legacy_invoice: (),
 		progress: Progress::Cosigning,
 	})
 }
@@ -306,7 +332,7 @@ async fn run_cosign(wallet: &Wallet, send: &ArkoorSend) -> Result<Progress, Adva
 	let neg_amount = -send.amount.to_signed().context("amount out-of-range").abort()?;
 
 	let arkoor = wallet.create_checkpointed_arkoor_with_vtxos(
-		dest, inputs, change_keypair, send.change_pieces.clone(),
+		dest, inputs, change_keypair, send.change_pieces.clone(), Some(&send.destination),
 	).await.retry_unless_rejected()?;
 
 	let initial_update = MovementUpdate::new()
@@ -382,8 +408,19 @@ mod test {
 			input_vtxo_ids: vec![],
 			change_key_index: 0,
 			change_pieces: Some(vec![Amount::from_sat(5_000), Amount::from_sat(5_000)]),
+			legacy_invoice: (),
 			progress: Progress::Cosigning,
 		}
+	}
+
+	#[test]
+	fn ordinary_sends_cannot_resume_an_invoice_bound_checkpoint() {
+		let mut payload = serde_json::to_value(dummy_send()).unwrap();
+		assert!(payload.get("paid_invoice").is_none());
+		payload["paid_invoice"] = serde_json::Value::Null;
+		assert!(serde_json::from_value::<ArkoorSend>(payload.clone()).is_ok());
+		payload["paid_invoice"] = serde_json::json!("ln-payment-from-an-earlier-wallet");
+		assert!(serde_json::from_value::<ArkoorSend>(payload).is_err());
 	}
 
 	/// A checkpoint written before change_pieces existed must deserialize
