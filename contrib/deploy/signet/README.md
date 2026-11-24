@@ -35,6 +35,24 @@ for testing the point of sale and wallets end to end. The test deployment is
 - **Mine extra blocks** with `sudo -u scuttle /opt/scuttle/bin/signet-mine N`.
   Many quick blocks raise the difficulty at the next retarget, so mine sparingly.
 
+## Regtest
+
+The same scripts set up a regtest deployment with `NETWORK=regtest`, given to
+`setup.sh` once. It records the network in `/etc/scuttle/deploy.env`, which
+the other scripts read, and refuses to switch an existing deployment to the
+other network. The test deployment is `scuttle-regtest` (VM 111 on bigboy).
+
+- **Regtest never retargets.** The miner timer makes a block every minute
+  (`BLOCK_INTERVAL_SECS`), and any number can be mined on demand, so a test
+  can reach a VTXO's expiry (4,320 blocks) or an exit's timelocks right away.
+- **Mine with `sudo -u scuttle /opt/scuttle/bin/mine N`**, and run
+  bitcoin-cli as `sudo -u scuttle /opt/scuttle/bin/chain-cli`. On signet
+  these work too, and `signet-mine` is the old name for `mine`.
+- **The Ark settings are the same as on signet.** Only the chain differs.
+- **Bitcoind RPC is on port 18443**, and wallets use `--regtest`.
+  `wallets.sh` takes `NETWORK=regtest`, and `/dev/mine` allows up to 10,000
+  blocks on regtest.
+
 ## Build, set up, fund, check
 
 On the VM, from a checkout of the branch to deploy. Besides the repository's
@@ -57,12 +75,6 @@ Use `-j 3` and thin LTO. With 16 GB of RAM, a full-LTO release build with
 
 To update a deployment, rebuild and run `setup.sh` again, then restart the
 units it changed (`sudo systemctl restart scuttle-captaind scuttle-posd …`).
-
-A fresh installation sends operator sweeps to a fixed miner wallet address.
-To use fresh addresses, replace `sweep_address` in `/etc/scuttle/watchmand.toml`
-with a dedicated signet `sweep_descriptor` and restart `scuttle-watchmand`.
-`setup.sh` preserves the selected destination on later runs. See the
-[operator sweep settings and recovery instructions](../../../docs/expiry-payouts.md#operator-sweep-destination).
 
 Until posd's first release its one migration can still change. When it
 does, posd refuses to start on the old database: stop posd, drop its
@@ -113,6 +125,16 @@ A wallet uses `--signet --ark https://…:8443 --esplora https://…:10000`.
 - **Test helpers:** `/dev/` on the posd host, from `devtools.py`, gives
   faucet coins, mines blocks and creates a store's on-chain wallet. Each
   has a cap and a rate limit.
+
+### Cloudflare Tunnel instead
+
+`cloudflare.sh` publishes the same services through a Cloudflare Tunnel, on
+one-level names under a Cloudflare zone (`<name>`, `<name>-bull`,
+`<name>-ark`, `<name>-esplora`). The regtest deployment uses it under
+`vibecode.casa`. See the script's header for the steps. The zone's gRPC
+setting (Network → gRPC) must be on, or Cloudflare answers gRPC with 403.
+cloudflared runs with `--protocol http2`, because its default QUIC transport
+drops the trailers that carry gRPC's status.
 
 ## Trying it
 

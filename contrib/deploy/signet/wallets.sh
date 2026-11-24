@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Drives the public signet deployment from your own machine: two local bark
+# Drives a public signet or regtest deployment from your own machine: two local bark
 # wallets (a store owner and a customer), the owner API and terminals.
 #
 # Wallets
 #   create owner|customer             new wallet
 #   balance owner|customer            Ark balance
 #   onchain-balance owner|customer    on-chain balance
-#   faucet <wallet> [btc]             signet coins on-chain (default 0.01)
+#   faucet <wallet> [btc]             test coins on-chain (default 0.01)
 #   board <wallet>                    move all on-chain coins into Ark
 #   mine [n]                          mine n blocks now (default 1)
 #   bark <wallet> <args...>           any bark command
@@ -48,16 +48,26 @@
 #   pay-uri <wallet> <uri|invoice>    pay a copied QR or invoice, default way
 #   lnaddress <wallet> <name> <sats>  pay the store's Lightning address
 #
-# Use TILL=<name> to pick a till. State lives in $SIGNET_HOME (default
-# ~/.scuttle-signet). The faucet, mining and the store's on-chain wallet use
+# Use TILL=<name> to pick a till and NETWORK=regtest for the regtest
+# deployment (scuttle-regtest.vibecode.casa). State lives in $SIGNET_HOME (default
+# ~/.scuttle-$NETWORK). The faucet, mining and the store's on-chain wallet use
 # the deployment's public test helpers at https://<host>/dev/.
 set -euo pipefail
 
-HOST="${SIGNET_HOST:-scuttle-signet.tailc408a.ts.net}"
-ARK="https://$HOST:8443"
-ESPLORA="https://$HOST:10000"
+NETWORK="${NETWORK:-signet}"
+if [ "$NETWORK" = regtest ]; then
+	# Published by cloudflare.sh: one host per service.
+	HOST="${SIGNET_HOST:-scuttle-regtest.vibecode.casa}"
+	ARK="https://${HOST%%.*}-ark.${HOST#*.}"
+	ESPLORA="https://${HOST%%.*}-esplora.${HOST#*.}"
+else
+	# Published by public.sh over Tailscale Funnel: one host, three ports.
+	HOST="${SIGNET_HOST:-scuttle-$NETWORK.tailc408a.ts.net}"
+	ARK="https://$HOST:8443"
+	ESPLORA="https://$HOST:10000"
+fi
 POSD="https://$HOST"
-HOME_DIR="${SIGNET_HOME:-$HOME/.scuttle-signet}"
+HOME_DIR="${SIGNET_HOME:-$HOME/.scuttle-$NETWORK}"
 REPO="$(cd "$(dirname "$0")/../../.." && pwd)"
 BARK="${BARK:-$REPO/target/debug/bark}"
 TILL="${TILL:-till}"
@@ -135,7 +145,7 @@ case "$cmd" in
 create)
 	d=$(wallet_dir "${1:-}")
 	[ -e "$d" ] && die "$d exists"
-	"$BARK" create --datadir "$d" --signet --ark "$ARK" --esplora "$ESPLORA" >/dev/null 2>&1 \
+	"$BARK" create --datadir "$d" --"$NETWORK" --ark "$ARK" --esplora "$ESPLORA" >/dev/null 2>&1 \
 		|| die "bark create failed, see $d/debug.log"
 	echo "created $1: $(bark "$1" address)"
 	;;
