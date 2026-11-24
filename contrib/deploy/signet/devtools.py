@@ -11,6 +11,9 @@ https://<name>-faucet.<domain>. GET / shows a web page; the API is:
       pays a Lightning invoice from the outside node (cln-external). "sat"
       is needed only for an invoice without an amount.
   POST mine           {"blocks": 1}
+  POST liquid         {"address": "el1...", "lbtc": 1}
+      sends L-BTC on the Liquid regtest chain, when liquid.sh has set it up,
+      and mines a Liquid block to confirm it.
   POST store-wallet   {"name": "My Store"}
       creates a wallet on the VM and returns its public descriptor for store
       registration. The VM holds the wallet's spending keys.
@@ -23,6 +26,7 @@ retargets, so a few requests reach a VTXO's expiry.
 """
 
 import json
+import os
 import re
 import subprocess
 import threading
@@ -31,6 +35,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 CHAIN_CLI = "/opt/scuttle/bin/chain-cli"
 MINER = "/opt/scuttle/bin/mine"
+LIQUID_CLI = "/opt/scuttle/bin/liquid-cli"
+LIQUID_MINER = "/opt/scuttle/bin/liquid-mine"
+HAS_LIQUID = os.path.exists(LIQUID_CLI)
 LISTEN = ("127.0.0.1", 3090)
 
 
@@ -49,6 +56,7 @@ INVOICE_CURRENCY = {"regtest": "bcrt", "signet": "tbs"}[NETWORK]
 
 MAX_FAUCET_BTC = 1.0 if REGTEST else 0.1
 MAX_LIGHTNING_SAT = 1_000_000 if REGTEST else 100_000
+MAX_LIQUID_LBTC = 1.0
 LIGHTNING_WAIT_SECS = 15
 # Regtest mines about 15 blocks a second. A request must finish within
 # Cloudflare's 100-second origin timeout.
@@ -59,6 +67,7 @@ MAX_BODY = 4096
 LIMITS = {
 	"faucet": ((10, 600), (60, 600)),
 	"lightning": ((10, 600), (60, 600)),
+	"liquid": ((10, 600), (60, 600)),
 	"mine": ((10, 600), (40, 600)),
 	"store-wallet": ((10, 600), (40, 600)),
 }
@@ -111,21 +120,37 @@ def lncli(*args: str) -> dict:
 	return json.loads(run([*LNCLI, *args]))
 
 
+def lcli(*args: str) -> str:
+	return run([LIQUID_CLI, *args])
+
+
 def mine(blocks: int) -> int:
 	with _mine_lock:
 		out = run([MINER, str(blocks)], timeout=300)
 	return int(out.splitlines()[-1])
 
 
+def liquid_status() -> dict | None:
+	if not HAS_LIQUID:
+		return None
+	return {
+		"height": int(lcli("getblockcount")),
+		"faucet_lbtc": json.loads(lcli("-rpcwallet=miner", "getbalance"))["bitcoin"],
+		"policy_asset": json.loads(lcli("getsidechaininfo"))["pegged_asset"],
+	}
+
+
 def status(_body: dict) -> dict:
 	channels = lncli("listpeerchannels")["channels"]
 	return {
+		"liquid": liquid_status(),
 		"network": NETWORK,
 		"height": int(cli("getblockcount")),
 		"faucet_btc": json.loads(cli("-rpcwallet=miner", "getbalances"))["mine"]["trusted"],
 		"lightning_sat": sum(c.get("spendable_msat", 0) for c in channels
 			if c["state"] == "CHANNELD_NORMAL") // 1000,
-		"limits": {"faucet_btc": MAX_FAUCET_BTC, "lightning_sat": MAX_LIGHTNING_SAT, "blocks": MAX_BLOCKS},
+		"limits": {"faucet_btc": MAX_FAUCET_BTC, "lightning_sat": MAX_LIGHTNING_SAT, "blocks": MAX_BLOCKS,
+			"liquid_lbtc": MAX_LIQUID_LBTC},
 	}
 
 
@@ -139,6 +164,19 @@ def faucet(body: dict) -> dict:
 	txid = cli("-rpcwallet=miner", "sendtoaddress", address, f"{btc:.8f}")
 	# Confirm it, so the coins can be boarded right away.
 	return {"txid": txid, "btc": btc, "height": mine(1)}
+
+
+def liquid(body: dict) -> dict:
+	address = str(body.get("address", "")).strip()
+	lbtc = float(body.get("lbtc", 0.01))
+	if not 0 < lbtc <= MAX_LIQUID_LBTC:
+		raise ValueError(f"lbtc must be between 0 and {MAX_LIQUID_LBTC}")
+	if not json.loads(lcli("validateaddress", address)).get("isvalid"):
+		raise ValueError("not a valid Liquid regtest address")
+	txid = lcli("-rpcwallet=miner", "sendtoaddress", address, f"{lbtc:.8f}")
+	with _mine_lock:
+		run([LIQUID_MINER, "1"])
+	return {"txid": txid, "lbtc": lbtc, "height": int(lcli("getblockcount"))}
 
 
 def lightning(body: dict) -> dict:
@@ -211,6 +249,8 @@ def store_wallet(body: dict) -> dict:
 
 
 POST = {"faucet": faucet, "lightning": lightning, "mine": mine_blocks, "store-wallet": store_wallet}
+if HAS_LIQUID:
+	POST["liquid"] = liquid
 
 PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -263,6 +303,14 @@ code { font-size: .85rem; }
 <p class="hint">Paid by a Lightning node outside the Ark, as an outside payer would. An Ark wallet must be open to claim the payment: keep it open until it arrives, and don't mine many blocks meanwhile.</p>
 </form>
 
+<form data-ep="liquid" id="liquid-form" hidden>
+<h2>Liquid coins (L-BTC)</h2>
+<label for="laddress">Liquid address</label><input id="laddress" name="address" required autocomplete="off" spellcheck="false">
+<label for="lbtc-amt">L-BTC</label><input id="lbtc-amt" name="lbtc" type="number" step="0.00000001" min="0.00000001" value="0.1" required>
+<button>Send L-BTC</button><div class="out"></div>
+<p class="hint" id="liquid-hint"></p>
+</form>
+
 <form data-ep="mine">
 <h2>Mine blocks</h2>
 <label for="blocks">Blocks</label><input id="blocks" name="blocks" type="number" min="1" value="1" required>
@@ -288,6 +336,12 @@ async function refresh() {
 		btc.textContent = fmt(Math.floor(s.faucet_btc)); ln.textContent = fmt(s.lightning_sat);
 		document.querySelector("#btc-amt").max = s.limits.faucet_btc;
 		document.querySelector("#blocks").max = s.limits.blocks;
+		if (s.liquid) {
+			document.querySelector("#liquid-form").hidden = false;
+			document.querySelector("#lbtc-amt").max = s.limits.liquid_lbtc;
+			document.querySelector("#liquid-hint").textContent = "A standalone Liquid regtest chain at height " + fmt(s.liquid.height)
+				+ ", a block a minute; a block confirms the coins right away. Policy asset " + s.liquid.policy_asset + ".";
+		}
 		document.querySelector("#mine-hint").textContent = s.network === "regtest"
 			? "A block comes every minute on its own. Up to " + fmt(s.limits.blocks) + " blocks a request: a VTXO expires after 4,320."
 			: "A block comes every 10 minutes on its own. Up to " + s.limits.blocks + " blocks a request.";

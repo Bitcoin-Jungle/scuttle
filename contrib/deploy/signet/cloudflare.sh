@@ -17,6 +17,7 @@
 #   https://$NAME-bull.$DOMAIN/      posd for Bull Bitcoin stores
 #   https://$NAME-ark.$DOMAIN        captaind gRPC, the Ark server for wallets
 #   https://$NAME-esplora.$DOMAIN    Esplora (electrs)
+#   https://$NAME-liquid.$DOMAIN     Liquid Esplora, when liquid.sh has set it up
 #
 # The names are one level below the domain, because Cloudflare's Universal
 # SSL certificate covers only *.$DOMAIN.
@@ -40,6 +41,7 @@ FAUCET="$NAME-faucet.$DOMAIN"
 WALLET="$NAME-wallet.$DOMAIN"
 CONSOLE="$NAME-console.$DOMAIN"
 EXCHANGE="$NAME-exchange.$DOMAIN"
+LIQUID="$NAME-liquid.$DOMAIN"
 TUNNEL=$(jq -r .TunnelID "$CREDENTIALS")
 TLS=/etc/scuttle/tls
 
@@ -146,6 +148,8 @@ ingress:
     service: http://127.0.0.1:8447
   - hostname: $EXCHANGE
     service: http://127.0.0.1:8088
+  - hostname: $LIQUID
+    service: http://127.0.0.1:3003
   - service: http_status:404
 EOF
 sudo cloudflared tunnel --config /etc/cloudflared/config.yml ingress validate
@@ -167,7 +171,7 @@ sudo systemctl restart scuttle-cloudflared.service
 
 echo
 echo "Point DNS at the tunnel, from a machine with a cloudflared login for $DOMAIN:"
-for h in "$POS" "$BULL" "$ARK" "$ESPLORA" "$FAUCET" "$WALLET" "$CONSOLE" "$EXCHANGE"; do echo "  cloudflared tunnel route dns $TUNNEL $h"; done
+for h in "$POS" "$BULL" "$ARK" "$ESPLORA" "$FAUCET" "$WALLET" "$CONSOLE" "$EXCHANGE" "$LIQUID"; do echo "  cloudflared tunnel route dns $TUNNEL $h"; done
 echo "Then give posd its public URLs:"
 echo "  NETWORK=… PUBLIC_URL=https://$POS BULL_PUBLIC_URL=https://$BULL ./contrib/deploy/signet/setup.sh && sudo systemctl restart scuttle-posd"
 echo "Wallets: --ark https://$ARK --esplora https://$ESPLORA"

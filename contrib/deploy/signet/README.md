@@ -52,6 +52,14 @@ other network. The test deployment is `scuttle-regtest` (VM 111 on bigboy).
 - **Bitcoind RPC is on port 18443**, and wallets use `--regtest`.
   `wallets.sh` takes `NETWORK=regtest`, and `/dev/mine` allows up to 10,000
   blocks on regtest.
+- **Liquid, optionally.** `liquid.sh` adds a standalone Liquid regtest chain
+  (elementsd and its Esplora/Electrum index, Nigiri's images and chain
+  parameters, so L-BTC is BULL's policy asset `5ac9f65c…b225`). No peg-ins
+  and no Boltz. A block a minute; `liquid-cli` and `liquid-mine` are in
+  `/opt/scuttle/bin`, and the faucet's `POST /liquid` sends L-BTC.
+- **Electrum.** Cloudflare Tunnel carries no raw TCP, so the Electrum ports go
+  out through Tailscale Funnel with TLS: on `scuttle-regtest`, bitcoin at
+  `ssl://scuttle-regtest.tailc408a.ts.net:443` and Liquid at `:8443`.
 
 ## Build, set up, fund, check
 
