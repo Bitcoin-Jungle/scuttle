@@ -28,6 +28,7 @@ retargets, so a few requests reach a VTXO's expiry.
 import json
 import os
 import re
+import shlex
 import subprocess
 import threading
 import time
@@ -42,6 +43,8 @@ LISTEN = ("127.0.0.1", 3090)
 
 
 def deployed_network() -> str:
+	if os.environ.get("NETWORK"):
+		return os.environ["NETWORK"]
 	with open("/etc/scuttle/deploy.env") as f:
 		for line in f:
 			if line.startswith("NETWORK="):
@@ -112,7 +115,10 @@ def cli(*args: str) -> str:
 
 # lightning-cli of the outside node. "-N none" keeps progress notifications,
 # such as xpay's, out of the JSON output.
-LNCLI = ["docker", "exec", "scuttle-cln-external", "lightning-cli",
+# DEVTOOLS_LNCLI replaces it, for a stack with another payer node, as the
+# regtest host's BULL stack (contrib/deploy/regtest/host.sh).
+LNCLI = shlex.split(os.environ["DEVTOOLS_LNCLI"]) if os.environ.get("DEVTOOLS_LNCLI") else [
+	"docker", "exec", "scuttle-cln-external", "lightning-cli",
 	f"--network={NETWORK}", "--lightning-dir=/data/.lightning", "-N", "none", "-k"]
 
 

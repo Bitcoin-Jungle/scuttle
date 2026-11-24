@@ -18,6 +18,9 @@ set -euo pipefail
 
 BARK_WEB="${BARK_WEB:?a bark-web checkout}"
 UI_AUTH="${UI_AUTH:-true}"
+# The Esplora wallets read the chain from: setup.sh's electrs, or the BULL
+# stack's on a regtest host (contrib/deploy/regtest/host.sh: 127.0.0.1:30000).
+CHAIN_SOURCE="${CHAIN_SOURCE:-http://127.0.0.1:3002}"
 DATA=/var/lib/scuttle/webwallet
 ETC=/etc/scuttle/webwallet
 eval "$(sudo cat /etc/scuttle/deploy.env)"   # NETWORK
@@ -77,7 +80,7 @@ ExecStart=/usr/bin/docker run --rm --name scuttle-webwallet-api --net=host --use
 	--mount type=bind,source=$ETC,target=/auth,readonly \\
 	-e HOST=127.0.0.1 -e PORT=4001 -e BARKD_URL=http://127.0.0.1:4000 -e WALLET_DIR=/wallet-data/.bark \\
 	-e WALLET_DATA_PATH=$DATA/ -e BARK_NETWORK=$NETWORK \\
-	-e ARK_SERVER=http://127.0.0.1:3535 -e CHAIN_SOURCE=http://127.0.0.1:3002 \\
+	-e ARK_SERVER=http://127.0.0.1:3535 -e CHAIN_SOURCE=$CHAIN_SOURCE \\
 	-e UI_AUTH=$UI_AUTH -e UI_PASSWORD_FILE=/auth/ui_password -e UI_SESSION_SECRET_FILE=/auth/ui_session_secret \\
 	-e POSD_URL=http://127.0.0.1:3080 -e "POS_BRANDS=bitcoinjungle:Bitcoin Jungle,bullbitcoin:Bull Bitcoin" \\
 	-e POS_CURRENCIES=$(sudo grep -oP '^currencies = \{\K[^}]*' /etc/scuttle/posd.toml | grep -oP '[A-Z]{3}(?= =)' | paste -sd,) \\
