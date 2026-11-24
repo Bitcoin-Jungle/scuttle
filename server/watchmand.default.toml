@@ -18,6 +18,11 @@ network = "regtest"
 # set above.
 #sweep_address = "<bitcoin address>"
 
+# Instead of sweep_address, a public ranged receive descriptor of your wallet.
+# watchmand then pays each sweep to the next address of the descriptor. Set
+# one of the two, not both.
+#sweep_descriptor = "tr(<account-tpub>/0/*)"
+
 # The interval at which the SyncManager polls for new blocks
 sync_manager_block_poll_interval = "100ms"
 
