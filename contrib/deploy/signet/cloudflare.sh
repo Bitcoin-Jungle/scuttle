@@ -11,7 +11,8 @@
 #   https://$NAME.$DOMAIN/           posd for Bitcoin Jungle stores
 #   https://$NAME.$DOMAIN/dev/       test faucet, mining and store wallets
 #   https://$NAME-faucet.$DOMAIN/    the same, at the root
-#   https://$NAME-wallet.$DOMAIN/    bark-web, when webwallet.sh has set it up
+#   https://$NAME-wallet.$DOMAIN/    bark-web in the browser (webwallet-wasm.sh): a wallet each
+#   https://$NAME-console.$DOMAIN/   bark-web on one shared barkd (webwallet.sh)
 #   https://$NAME-exchange.$DOMAIN/  BULL's dummy exchange, when exchange.sh has set it up
 #   https://$NAME-bull.$DOMAIN/      posd for Bull Bitcoin stores
 #   https://$NAME-ark.$DOMAIN        captaind gRPC, the Ark server for wallets
@@ -37,6 +38,7 @@ ARK="$NAME-ark.$DOMAIN"
 ESPLORA="$NAME-esplora.$DOMAIN"
 FAUCET="$NAME-faucet.$DOMAIN"
 WALLET="$NAME-wallet.$DOMAIN"
+CONSOLE="$NAME-console.$DOMAIN"
 EXCHANGE="$NAME-exchange.$DOMAIN"
 TUNNEL=$(jq -r .TunnelID "$CREDENTIALS")
 TLS=/etc/scuttle/tls
@@ -62,17 +64,34 @@ if ! sudo test -f "$TLS/origin.crt"; then
 fi
 sudo rm -f /etc/nginx/sites-enabled/default
 sudo tee /etc/nginx/sites-available/scuttle-grpc-origin >/dev/null <<EOF
-# The Ark server gRPC API, for cloudflared.
+# The Ark server API, for cloudflared. Native wallets speak gRPC; browser
+# wallets speak gRPC-Web, which captaind serves over plain HTTP (it accepts
+# HTTP/1.1 and answers CORS preflights itself).
+map "\$request_method:\$http_content_type" \$ark_grpc_web {
+	default 0;
+	"~^OPTIONS:" 1;
+	"~^[A-Z]+:application/grpc-web" 1;
+}
 server {
 	listen 127.0.0.1:8445 ssl;
 	http2 on;
 	ssl_certificate $TLS/origin.crt;
 	ssl_certificate_key $TLS/origin.key;
+	error_page 418 = @grpc_web;
 	location / {
+		if (\$ark_grpc_web) {
+			return 418;
+		}
 		grpc_pass grpc://127.0.0.1:3535;
 		# Mailbox and round streams stay open.
 		grpc_read_timeout 1h;
 		grpc_send_timeout 1h;
+	}
+	location @grpc_web {
+		proxy_pass http://127.0.0.1:3535;
+		proxy_http_version 1.1;
+		proxy_buffering off;
+		proxy_read_timeout 1h;
 	}
 }
 EOF
@@ -122,6 +141,8 @@ ingress:
   - hostname: $FAUCET
     service: http://127.0.0.1:3090
   - hostname: $WALLET
+    service: http://127.0.0.1:8448
+  - hostname: $CONSOLE
     service: http://127.0.0.1:8447
   - hostname: $EXCHANGE
     service: http://127.0.0.1:8088
@@ -146,7 +167,7 @@ sudo systemctl restart scuttle-cloudflared.service
 
 echo
 echo "Point DNS at the tunnel, from a machine with a cloudflared login for $DOMAIN:"
-for h in "$POS" "$BULL" "$ARK" "$ESPLORA" "$FAUCET" "$WALLET" "$EXCHANGE"; do echo "  cloudflared tunnel route dns $TUNNEL $h"; done
+for h in "$POS" "$BULL" "$ARK" "$ESPLORA" "$FAUCET" "$WALLET" "$CONSOLE" "$EXCHANGE"; do echo "  cloudflared tunnel route dns $TUNNEL $h"; done
 echo "Then give posd its public URLs:"
 echo "  NETWORK=… PUBLIC_URL=https://$POS BULL_PUBLIC_URL=https://$BULL ./contrib/deploy/signet/setup.sh && sudo systemctl restart scuttle-posd"
 echo "Wallets: --ark https://$ARK --esplora https://$ESPLORA"
