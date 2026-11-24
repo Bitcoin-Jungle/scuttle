@@ -14,6 +14,7 @@ mod board;
 mod exit;
 mod expiry_payout;
 mod import;
+mod intra_ark_fees;
 mod lightning;
 mod mailbox;
 mod offboard;

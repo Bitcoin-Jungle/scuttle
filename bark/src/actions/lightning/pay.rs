@@ -388,7 +388,10 @@ pub(crate) async fn start_lightning_send(
 	original_payment_method: PaymentMethod,
 	retry_for: Option<Duration>,
 ) -> anyhow::Result<LightningSend> {
-	let (_, ark_info) = wallet.require_server().await?;
+	let (mut server, ark_info) = wallet.require_server().await?;
+	// The server charges the intra-Ark fee when it holds the receive itself.
+	// Ask before reading the tip, which the HTLC expiry below is based on.
+	let fees = crate::fees::lightning_send_fees_for_invoice(&mut server, &ark_info.fees, Some(&invoice)).await?;
 	let tip = wallet.inner.chain.tip().await?;
 
 	let properties = wallet.inner.db.read_properties().await?.context("Missing config")?;
@@ -408,7 +411,7 @@ pub(crate) async fn start_lightning_send(
 
 	let (inputs, fee) = wallet.select_any_vtxos_to_cover_with_fee(
 		payment_amount,
-		|a, v| ark_info.fees.lightning_send.calculate(a, v).context("fee overflowed"),
+		|a, v| fees.calculate(a, v).context("fee overflowed"),
 	).await.context("Could not find enough suitable VTXOs to cover lightning payment")?;
 
 	let input_total = inputs.iter().map(|v| v.amount()).sum::<Amount>();

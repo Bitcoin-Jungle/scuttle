@@ -1,0 +1,5 @@
+- Carry intra-Ark Lightning fees in the fee schedule
+  With `FeeSchedule.intra_ark` unset, wallets use the configured Lightning
+  rates. Wallets that ignore the field, such as upstream Bark, quote those
+  rates too.
+  [#21](https://github.com/SatoshiPortal/scuttle/pull/21)
