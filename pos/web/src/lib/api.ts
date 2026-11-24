@@ -36,6 +36,9 @@ export interface Store {
 	/** The decimal places a sale in `currency` may have. */
 	currency_decimals: number
 	onchain_min_sat: number
+	/** The smallest sale in sats: below it the Ark server's Lightning
+	 * receive fee would take the whole amount. */
+	min_sale_sat: number
 	lightning_address: string | null
 	/** The key of the store's brand. */
 	brand: string

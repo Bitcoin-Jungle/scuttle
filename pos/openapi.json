@@ -2135,6 +2135,7 @@
           "currency",
           "currency_decimals",
           "onchain_min_sat",
+          "min_sale_sat",
           "brand"
         ],
         "properties": {
@@ -2160,6 +2161,13 @@
             ],
             "description": "`null` when the store has none. Its domain is the host of the\nbrand's public URL.",
             "example": "cornercafe@pay.example.com"
+          },
+          "min_sale_sat": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The smallest sale, in sats: below it the Ark server's Lightning\nreceive fee would take the whole amount. It follows the server's fees.",
+            "example": 2,
+            "minimum": 0
           },
           "name": {
             "type": "string",

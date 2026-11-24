@@ -116,7 +116,7 @@ pub async fn register(
 	let store = row.map(|r| Store::from_row(&r))
 		.ok_or_else(|| conflict("a store is already registered for this Ark address"))?;
 	tx.commit().await?;
-	Ok(Json(StoreResponse { store: OwnerStoreView::new(&app, &store) }))
+	Ok(Json(StoreResponse { store: OwnerStoreView::new(&app, &store).await }))
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -224,7 +224,7 @@ pub async fn login(
 	responses((status = 200, description = "The store", body = OwnerStoreView), (status = 401, description = "The token is missing, not valid, or expired", body = ErrorBody),),
 )]
 pub async fn get_store(State(app): State<Arc<App>>, owner: Owner) -> Json<OwnerStoreView> {
-	Json(OwnerStoreView::new(&app, &owner.store))
+	Json(OwnerStoreView::new(&app, &owner.store).await)
 }
 
 /// The fields to change. Fields left out stay as they are.
@@ -357,7 +357,7 @@ pub async fn update_store(
 		&brand.as_str(),
 	]).await.map_err(lightning_name_taken)?;
 	tx.commit().await?;
-	Ok(Json(OwnerStoreView::new(&app, &Store::from_row(&row))))
+	Ok(Json(OwnerStoreView::new(&app, &Store::from_row(&row)).await))
 }
 
 #[derive(Serialize, ToSchema)]

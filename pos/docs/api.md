@@ -125,6 +125,7 @@ know BIP 21 mishandle one.
   "currency": "CRC",
   "currency_decimals": 2,
   "onchain_min_sat": 50000,
+  "min_sale_sat": 2,
   "lightning_address": "cornercafe@pay.example.com",
   "brand": "example"
 }
@@ -132,6 +133,10 @@ know BIP 21 mishandle one.
 
 - `currency_decimals` is how many decimal places a sale in `currency` may
   have.
+- `min_sale_sat` is the smallest sale. bark makes no Lightning invoice that
+  the Ark server's receive fee would leave empty: at 0.20%, rounded up to a
+  whole sat, a 1-sat invoice leaves nothing, so the minimum is 2. It
+  follows the server's fees. A smaller sale is refused with `400`.
 - `lightning_address` is `null` when the store has none. Its domain is the
   host of the brand's `public_url`.
 - `brand` is the key of the store's brand. It sets the terminal's look and
@@ -356,7 +361,8 @@ body, `{"status": "ERROR", "reason": "…"}`, so the payer's wallet shows the
 reason.
 
 - `GET /.well-known/lnurlp/<name>` returns the pay request. `minSendable` is
-  1,000 msat and `maxSendable` is set in the posd config.
+  the store's `min_sale_sat` in msat and `maxSendable` is set in the posd
+  config.
   `payment_methods` lists the LUD-22 methods besides Lightning: `ARK`, and
   `SP` when the owner registered a silent payment address.
 - `GET /api/v1/lnurlp/<name>/callback?amount=<msat>` creates a sale with no

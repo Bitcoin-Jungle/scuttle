@@ -85,7 +85,7 @@ pub async fn pair(
 	).await?;
 	tx.commit().await?;
 
-	Ok(Json(PairResponse { token: device_token, store: StoreView::new(&app, &store) }))
+	Ok(Json(PairResponse { token: device_token, store: StoreView::new(&app, &store).await }))
 }
 
 #[derive(Serialize, ToSchema)]
@@ -104,7 +104,7 @@ pub struct TerminalView {
 	),
 )]
 pub async fn terminal(State(app): State<Arc<App>>, t: Terminal) -> Json<TerminalView> {
-	Json(TerminalView { store: StoreView::new(&app, &t.store), device_name: t.device.name })
+	Json(TerminalView { store: StoreView::new(&app, &t.store).await, device_name: t.device.name })
 }
 
 #[derive(Serialize, ToSchema)]

@@ -65,6 +65,7 @@ export const en = {
 	'keypad.amountUnit': 'Amount unit',
 	'keypad.sats': 'Sats',
 	'keypad.approx': '≈ {amount}',
+	'keypad.belowMinimum': 'The smallest sale is {amount}',
 	'keypad.addKey': 'Add {key}',
 	'keypad.deleteKey': 'Delete digit',
 	'keypad.centsKey': 'Add cents',

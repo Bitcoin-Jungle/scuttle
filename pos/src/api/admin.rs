@@ -121,5 +121,5 @@ pub async fn assign_lightning_address(
 		RETURNING {}
 	", STORE_COLUMNS), &[&current.id, &req.name]).await.map_err(lightning_name_taken)?;
 	tx.commit().await?;
-	Ok(Json(StoreView::new(&app, &Store::from_row(&row))))
+	Ok(Json(StoreView::new(&app, &Store::from_row(&row)).await))
 }

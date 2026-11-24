@@ -67,6 +67,7 @@ export const es: Messages = {
 	'keypad.amountUnit': 'Unidad del monto',
 	'keypad.sats': 'Sats',
 	'keypad.approx': '≈ {amount}',
+	'keypad.belowMinimum': 'La venta mínima es de {amount}',
 	'keypad.addKey': 'Agregar {key}',
 	'keypad.deleteKey': 'Borrar dígito',
 	'keypad.centsKey': 'Agregar céntimos',

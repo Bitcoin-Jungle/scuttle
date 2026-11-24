@@ -217,6 +217,10 @@ pub struct StoreView {
 	/// Sales below this many sats offer no on-chain address.
 	#[schema(example = 50000)]
 	pub onchain_min_sat: i64,
+	/// The smallest sale, in sats: below it the Ark server's Lightning
+	/// receive fee would take the whole amount. It follows the server's fees.
+	#[schema(example = 2)]
+	pub min_sale_sat: u64,
 	/// `null` when the store has none. Its domain is the host of the
 	/// brand's public URL.
 	#[schema(example = "cornercafe@pay.example.com")]
@@ -226,7 +230,7 @@ pub struct StoreView {
 }
 
 impl StoreView {
-	pub fn new(app: &App, store: &Store) -> StoreView {
+	pub async fn new(app: &App, store: &Store) -> StoreView {
 		StoreView {
 			name: store.name.clone(),
 			currency: store.currency.clone(),
@@ -234,6 +238,10 @@ impl StoreView {
 			// and amounts show with the usual 2.
 			currency_decimals: app.price.decimals(&store.currency).unwrap_or(2),
 			onchain_min_sat: store.onchain_min_sat,
+			// No amount leaves anything when the fee is 100% or more: then no
+			// sale is possible, which u64::MAX says.
+			min_sale_sat: crate::sales::min_lightning_amount(&app.ark.ark_info().await.fees.lightning_receive)
+				.map_or(u64::MAX, |min| min.to_sat()),
 			lightning_address: store.lightning_address_name.as_ref()
 				.zip(app.cfg.brand(&store.brand))
 				.map(|(n, brand)| format!("{}@{}", n, brand.host())),
@@ -265,9 +273,9 @@ pub struct OwnerStoreView {
 }
 
 impl OwnerStoreView {
-	pub fn new(app: &App, store: &Store) -> OwnerStoreView {
+	pub async fn new(app: &App, store: &Store) -> OwnerStoreView {
 		OwnerStoreView {
-			store: StoreView::new(app, store),
+			store: StoreView::new(app, store).await,
 			ark_address: store.ark_address.clone(),
 			onchain_descriptor: store.onchain_descriptor.clone(),
 			next_onchain_index: store.next_onchain_index,
