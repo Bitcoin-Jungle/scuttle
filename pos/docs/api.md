@@ -359,6 +359,9 @@ original host, or set `X-Forwarded-Host` with `http.trust_forwarded_host`.
 A posd with one brand answers on any host. LNURL errors have the LUD-06
 body, `{"status": "ERROR", "reason": "…"}`, so the payer's wallet shows the
 reason.
+The LNURL endpoints send `Access-Control-Allow-Origin: *` and answer CORS
+preflights, so a wallet running in a browser on another site can use them
+(LUD-01). The other endpoints send no CORS headers.
 
 - `GET /.well-known/lnurlp/<name>` returns the pay request. `minSendable` is
   the store's `min_sale_sat` in msat and `maxSendable` is set in the posd

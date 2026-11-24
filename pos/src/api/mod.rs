@@ -14,9 +14,14 @@ mod web;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::FromRequestParts;
-use axum::http::header::AUTHORIZATION;
+use axum::extract::{FromRequestParts, Request};
+use axum::http::header::{
+	ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS, ACCESS_CONTROL_ALLOW_ORIGIN, AUTHORIZATION,
+};
 use axum::http::request::Parts;
+use axum::http::{HeaderValue, Method, StatusCode};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
 use utoipa::OpenApi;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
@@ -125,6 +130,46 @@ pub fn router(app: Arc<App>) -> Router {
 		.route("/brands/{brand}/{file}", get(web::brand_asset))
 		.fallback(web::asset)
 		.with_state(app)
+		.layer(axum::middleware::from_fn(lnurl_cors))
+}
+
+/// The LNURL endpoints, which a wallet on any site may call.
+fn is_lnurl(path: &str) -> bool {
+	path.starts_with("/.well-known/lnurlp/") || path.starts_with("/api/v1/lnurlp/")
+}
+
+/// LNURL (LUD-01) lets browser wallets call a service from their own
+/// origin, so its public, unauthenticated GET endpoints allow any origin,
+/// errors included, so the wallet can show the reason. The owner and
+/// terminal APIs stay same-origin.
+async fn lnurl_cors(req: Request, next: Next) -> Response {
+	if !is_lnurl(req.uri().path()) {
+		return next.run(req).await;
+	}
+	if req.method() == Method::OPTIONS {
+		return (StatusCode::NO_CONTENT, [
+			(ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
+			(ACCESS_CONTROL_ALLOW_METHODS, "GET, OPTIONS"),
+			(ACCESS_CONTROL_ALLOW_HEADERS, "*"),
+		]).into_response();
+	}
+	let mut response = next.run(req).await;
+	response.headers_mut().insert(ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
+	response
+}
+
+#[cfg(test)]
+mod lnurl_cors_test {
+	use super::is_lnurl;
+
+	#[test]
+	fn only_lnurl_paths_get_cors() {
+		assert!(is_lnurl("/.well-known/lnurlp/cafe"));
+		assert!(is_lnurl("/api/v1/lnurlp/cafe/callback"));
+		assert!(!is_lnurl("/api/v1/owner/store"));
+		assert!(!is_lnurl("/api/v1/sales"));
+		assert!(!is_lnurl("/.well-known/other"));
+	}
 }
 
 fn bearer(parts: &Parts) -> Result<&str, ApiError> {
