@@ -68,6 +68,7 @@
           "operator"
         ],
         "summary": "Gives a store of the operator's brand a Lightning address, reserved or not.",
+        "description": "A name another store gave up is held for it like any other, and the name\nthe store had is held for it.",
         "operationId": "assign_lightning_address",
         "requestBody": {
           "content": {
@@ -121,7 +122,7 @@
             }
           },
           "409": {
-            "description": "Another store has the name",
+            "description": "Another store has or holds the name",
             "content": {
               "application/json": {
                 "schema": {
@@ -200,7 +201,7 @@
         "tags": [
           "lnurl"
         ],
-        "summary": "Makes the invoice for a Lightning address payment (LUD-06 callback).",
+        "summary": "Makes the invoice for a Lightning address payment (LUD-06 callback), or\ngives the address of a LUD-22 method.",
         "operationId": "callback",
         "parameters": [
           {
@@ -222,15 +223,28 @@
               "format": "int64",
               "minimum": 0
             }
+          },
+          {
+            "name": "payment_method",
+            "in": "query",
+            "description": "LUD-22: methods from `payment_methods`, comma-separated, most\npreferred first. The first one the store offers is answered with its\naddress; with none, or without the field, the answer is an invoice.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "example": "ARK,SP"
           }
         ],
         "responses": {
           "200": {
-            "description": "The invoice",
+            "description": "The invoice, or the address of a LUD-22 method",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CallbackResponse"
+                  "$ref": "#/components/schemas/CallbackReply"
                 }
               }
             }
@@ -653,7 +667,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Store"
+                  "$ref": "#/components/schemas/OwnerStoreView"
                 }
               }
             }
@@ -697,7 +711,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Store"
+                  "$ref": "#/components/schemas/OwnerStoreView"
                 }
               }
             }
@@ -723,7 +737,7 @@
             }
           },
           "409": {
-            "description": "The Lightning address name is taken or reserved on the store's domain",
+            "description": "The Lightning address name is taken, reserved or held on the store's domain",
             "content": {
               "application/json": {
                 "schema": {
@@ -1100,6 +1114,20 @@
                 }
               ]
             }
+          },
+          {
+            "name": "onchain_sat",
+            "in": "query",
+            "description": "With `wait`, also return when `onchain_received_sat +\nonchain_pending_sat` is no longer this, so a terminal sees a partial\npayment arrive.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "minimum": 0
+            }
           }
         ],
         "responses": {
@@ -1229,13 +1257,91 @@
         ]
       }
     },
+    "/api/v1/sales/{id}/onchain": {
+      "post": {
+        "tags": [
+          "terminal"
+        ],
+        "summary": "Gives a sale its on-chain address, when the cashier picks on-chain.",
+        "description": "A sale gets one address, so repeating the request returns the same one.\nA payer who already paid part of the amount to it sees the full amount\nin `onchain_uri`; the terminal shows what arrived from\n`onchain_received_sat` and `onchain_pending_sat`.",
+        "operationId": "add_onchain",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The sale id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The sale, with its on-chain address",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaleView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The token is missing, not valid, or revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such sale in this store",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The sale is not open, is below the store's on-chain minimum, or the store has no unused address",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The chain source failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
     "/api/v1/stores": {
       "post": {
         "tags": [
           "owner"
         ],
         "summary": "Registers a store, signed by the owner's Ark key.",
-        "description": "The signed message is these lines, joined by `\\n`, with no trailing\nnewline: `posd registration v1`, then `name:`, `ark_address:`,\n`onchain_descriptor:`, `currency:`, `brand:`, `lightning_address_name:`\nand `timestamp:`, each followed by its field.",
+        "description": "The signed message is these lines, joined by `\\n`, with no trailing\nnewline: `posd registration v1`, then `name:`, `ark_address:`,\n`onchain_descriptor:`, `silent_payment_address:`, `currency:`, `brand:`,\n`lightning_address_name:` and `timestamp:`, each followed by its field.",
         "operationId": "register",
         "requestBody": {
           "content": {
@@ -1259,7 +1365,7 @@
             }
           },
           "400": {
-            "description": "The signature, timestamp, address, descriptor, currency, brand or Lightning address name is not valid",
+            "description": "The signature, timestamp, address, descriptor, silent payment address, currency, brand or Lightning address name is not valid",
             "content": {
               "application/json": {
                 "schema": {
@@ -1269,7 +1375,7 @@
             }
           },
           "409": {
-            "description": "A store is registered for the address, or the Lightning address name is taken or reserved",
+            "description": "A store is registered for the address, or the Lightning address name is taken, reserved or held",
             "content": {
               "application/json": {
                 "schema": {
@@ -1347,6 +1453,23 @@
         "description": "The key of a brand, as in `[brands.<key>]`: 1 to 32 lowercase letters,\ndigits and `-`.",
         "example": "example",
         "pattern": "^[a-z0-9-]{1,32}$"
+      },
+      "CallbackReply": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/CallbackResponse"
+          },
+          {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/MethodAddress"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        ],
+        "description": "An invoice, or with a LUD-22 method an address, keyed by the method:\n`{\"ARK\": {\"address\": \"ark1…\"}}`. Tell them apart by their shape."
       },
       "CallbackResponse": {
         "type": "object",
@@ -1570,6 +1693,60 @@
           }
         }
       },
+      "MethodAddress": {
+        "type": "object",
+        "description": "A LUD-22 address, for the amount of the callback.",
+        "required": [
+          "address"
+        ],
+        "properties": {
+          "address": {
+            "type": "string",
+            "example": "ark1…"
+          }
+        }
+      },
+      "OwnerStoreView": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Store"
+          },
+          {
+            "type": "object",
+            "required": [
+              "ark_address",
+              "onchain_descriptor",
+              "next_onchain_index"
+            ],
+            "properties": {
+              "ark_address": {
+                "type": "string",
+                "description": "The registered Ark address, whose key owns the store.",
+                "example": "ark1…"
+              },
+              "next_onchain_index": {
+                "type": "integer",
+                "format": "int64",
+                "description": "The next derivation index posd gives a sale from `onchain_descriptor`.\nEvery index below it may have been shown to a payer: a wallet that\nrestores the account scans at least that far, and gives none of\nthose addresses out for its own receives.",
+                "example": 12
+              },
+              "onchain_descriptor": {
+                "type": "string",
+                "example": "tr([fingerprint/86'/0'/1']xpub…/0/*)"
+              },
+              "silent_payment_address": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "`null` when the owner registered none.",
+                "example": "sp1q…"
+              }
+            }
+          }
+        ],
+        "description": "How a store looks to its owner: what a terminal sees, and what the\nowner's wallet needs to keep its accounts in step with posd."
+      },
       "PairRequest": {
         "type": "object",
         "required": [
@@ -1613,7 +1790,8 @@
           "callback",
           "minSendable",
           "maxSendable",
-          "metadata"
+          "metadata",
+          "payment_methods"
         ],
         "properties": {
           "callback": {
@@ -1635,6 +1813,17 @@
             "description": "In msat.",
             "example": 1000,
             "minimum": 0
+          },
+          "payment_methods": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "LUD-22: the methods besides Lightning that the callback can return\nan address for. `SP` only when the owner registered a silent payment\naddress.\nNamed as LUD-22 names it, not in the camelCase of LUD-06.",
+            "example": [
+              "ARK",
+              "SP"
+            ]
           },
           "tag": {
             "type": "string",
@@ -1730,6 +1919,11 @@
             "description": "The public descriptor of the on-chain account the host app keeps.",
             "example": "tr([fingerprint/86'/0'/1']xpub…/0/*)"
           },
+          "silent_payment_address": {
+            "type": "string",
+            "description": "The owner's BIP 352 silent payment address, which the store's\nLightning address offers to payers that support it. Empty or absent\nfor none.",
+            "example": "sp1q…"
+          },
           "timestamp": {
             "type": "integer",
             "format": "int64",
@@ -1792,8 +1986,10 @@
           "expires_at",
           "state",
           "amount_sat",
-          "payment_request",
           "lightning_invoice",
+          "onchain_available",
+          "onchain_received_sat",
+          "onchain_pending_sat",
           "received_sat"
         ],
         "properties": {
@@ -1864,8 +2060,30 @@
               "string",
               "null"
             ],
-            "description": "`null` below the store's `onchain_min_sat`.",
+            "description": "`null` until the cashier picks on-chain.",
             "example": "bc1p…"
+          },
+          "onchain_available": {
+            "type": "boolean",
+            "description": "Whether the sale can be paid on-chain: a terminal's sale of at least\nthe store's `onchain_min_sat`. The address is made when the cashier\npicks on-chain, with `POST /sales/{id}/onchain`."
+          },
+          "onchain_pending_sat": {
+            "type": "integer",
+            "format": "int64",
+            "description": "In the mempool to the on-chain address. With `onchain_received_sat`\nand an `open` sale, a partial payment: the payer still owes the rest."
+          },
+          "onchain_received_sat": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Confirmed to the on-chain address so far."
+          },
+          "onchain_uri": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The address and the sale's amount as a BIP 21 URI, `null` with the\naddress. It keeps the full amount after a partial payment.",
+            "example": "bitcoin:bc1p…?amount=0.00035"
           },
           "paid_at": {
             "type": [
@@ -1883,11 +2101,6 @@
                 "type": "null"
               }
             ]
-          },
-          "payment_request": {
-            "type": "string",
-            "description": "Both rails in one BIP 321 URI. Terminals show one rail at a time.",
-            "example": "bitcoin:bc1p…?amount=0.00035&lightning=lnbc…"
           },
           "received_sat": {
             "type": "integer",
@@ -1967,7 +2180,7 @@
         ],
         "properties": {
           "store": {
-            "$ref": "#/components/schemas/Store"
+            "$ref": "#/components/schemas/OwnerStoreView"
           }
         }
       },
@@ -2012,7 +2225,7 @@
               "string",
               "null"
             ],
-            "description": "1 to 64 lowercase letters, digits, `.`, `-` and `_`. An empty name\nremoves the Lightning address.",
+            "description": "1 to 64 lowercase letters, digits, `.`, `-` and `_`. An empty name\nremoves the Lightning address. A name the store gives up, by a new\nname, an empty one or a move to another brand, is held for it for 90\ndays: no other store can take it, and the store can take it back.",
             "pattern": "^[a-z0-9._-]{0,64}$"
           },
           "name": {

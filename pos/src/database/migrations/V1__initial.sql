@@ -13,8 +13,11 @@ CREATE TABLE store (
 	name TEXT NOT NULL,
 	ark_address TEXT NOT NULL UNIQUE,
 	onchain_descriptor TEXT NOT NULL,
-	-- The next derivation index to reserve for an on-chain sale.
+	-- The next derivation index to reserve for an on-chain sale. Every
+	-- index below it may have been shown to a payer.
 	next_onchain_index BIGINT NOT NULL DEFAULT 0,
+	-- The owner's BIP 352 silent payment address, if it gave one.
+	silent_payment_address TEXT,
 	currency TEXT NOT NULL,
 	-- The brand of the store, a key of posd's [brands] config.
 	brand TEXT NOT NULL,
@@ -26,6 +29,17 @@ CREATE TABLE store (
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	-- Each brand's domain has its own names.
 	UNIQUE (brand, lightning_address_name)
+);
+
+-- A Lightning address name a store gave up, held for it for a while, so a
+-- payer who saved the old address cannot pay another store. Only the store
+-- that gave it up can take it back before the hold ends.
+CREATE TABLE held_name (
+	brand TEXT NOT NULL,
+	name TEXT NOT NULL,
+	store_id BIGINT NOT NULL REFERENCES store(id),
+	held_until TIMESTAMPTZ NOT NULL,
+	PRIMARY KEY (brand, name)
 );
 
 -- A paired terminal. Only the hash of its token is stored.

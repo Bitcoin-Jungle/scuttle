@@ -8,7 +8,7 @@
 	import { restoreDraft } from '$lib/draft.svelte'
 	import { formatFiat, formatSats } from '$lib/money'
 	import { router } from '$lib/router.svelte'
-	import { countdown, isLive, lightningQr, onchainQr, onchainUri, railLabel, saleAmountLabel } from '$lib/sale'
+	import { countdown, isLive, lightningQr, onchainQr, onchainSeen, partialPayment, railLabel, saleAmountLabel } from '$lib/sale'
 	import { retryDelay } from '$lib/retry'
 	import { cachedSale, rememberSale } from '$lib/sale-cache'
 	import { client, session } from '$lib/session.svelte'
@@ -28,10 +28,13 @@
 	let nowMs = $state(Date.now())
 	let rail = $state<PaidRail>('lightning')
 	let copied = $state(false)
+	let gettingOnchain = $state(false)
+	let onchainError = $state<string | null>(null)
 
 	// Long-poll until the sale leaves its live states. Each request names the
-	// state the terminal last saw, so after any drop the next one returns the
-	// current state at once and no change is missed. On a network error the
+	// state and the on-chain sats the terminal last saw, so after any drop the
+	// next one returns the current sale at once and no change, a partial
+	// payment included, is missed. On a network error the
 	// loop retries with backoff. When the device wakes or comes back online,
 	// it drops the request in flight, which a sleeping phone may have left
 	// hanging, and asks again at once.
@@ -76,7 +79,7 @@
 				request = attempt
 				try {
 					const next = current
-						? await client().waitSale(id, current.state, attempt.signal)
+						? await client().waitSale(id, current.state, onchainSeen(current), attempt.signal)
 						: await client().sale(id, attempt.signal)
 					offline = false
 					failures = 0
@@ -132,11 +135,37 @@
 		if (sale.btc_price && sale.currency) return formatFiat((min / 1e8) * Number(sale.btc_price), sale.currency)
 		return formatSats(min)
 	})
-	const qrValue = $derived(sale ? (rail === 'onchain' && onchain ? onchain : lightningQr(sale)) : null)
+	// No code under On-chain until the address arrives: showing the
+	// Lightning code there would have the payer scan the wrong one.
+	const qrValue = $derived(sale ? (rail === 'onchain' ? onchain : lightningQr(sale)) : null)
+	const partial = $derived(sale ? partialPayment(sale) : null)
 
 	// The payment for the shown rail, as a wallet takes it pasted or shared:
 	// the invoice, or a BIP 21 URI so the amount comes along.
-	const paymentText = $derived(sale ? (rail === 'onchain' ? (onchainUri(sale) ?? '') : sale.lightning_invoice) : '')
+	const paymentText = $derived(sale ? (rail === 'onchain' ? (sale.onchain_uri ?? '') : sale.lightning_invoice) : '')
+
+	/**
+	 * Shows a rail. On-chain gets its address now, the first time: posd
+	 * makes one only for a sale the payer may pay on-chain, so addresses the
+	 * owner's wallet must scan for are not used up by Lightning sales.
+	 */
+	async function pick(next: PaidRail) {
+		rail = next
+		copied = false
+		onchainError = null
+		if (next !== 'onchain' || !sale || sale.onchain_address || gettingOnchain) return
+		gettingOnchain = true
+		try {
+			const withAddress = await client().addOnchain(sale.id)
+			rememberSale(withAddress)
+			sale = withAddress
+		} catch (e) {
+			rail = 'lightning'
+			onchainError = e instanceof ApiError && e.status === 409 ? t('pay.onchainRefused') : t('pay.onchainFailed')
+		} finally {
+			gettingOnchain = false
+		}
+	}
 	// The share sheet hands the payment to a wallet on the device, or to a
 	// messenger for a payer who is not at the counter. Without it (most
 	// desktop browsers), the button copies.
@@ -236,7 +265,7 @@
 		</div>
 
 		<div class="grid shrink-0 grid-cols-2 gap-1 rounded-lg bg-muted p-1" role="tablist" aria-label={t('pay.method')}>
-			{#each [{ id: 'lightning', sub: t('pay.instant'), ok: true }, { id: 'onchain', sub: onchain || !sale ? t('pay.onchainTime') : t('pay.onchainFrom', { amount: onchainFrom }), ok: !!onchain }] as m (m.id)}
+			{#each [{ id: 'lightning', sub: t('pay.instant'), ok: true }, { id: 'onchain', sub: !sale || sale.onchain_available ? t('pay.onchainTime') : t('pay.onchainFrom', { amount: onchainFrom }), ok: !!sale?.onchain_available }] as m (m.id)}
 				<button
 					type="button"
 					role="tab"
@@ -245,10 +274,7 @@
 					class={`flex h-[58px] items-center justify-center gap-2 rounded-md px-2 ${
 						rail === m.id ? 'bg-surface text-ink' : 'text-ink-soft'
 					} ${m.ok ? '' : 'opacity-60'}`}
-					onclick={() => {
-						rail = m.id as PaidRail
-						copied = false
-					}}
+					onclick={() => pick(m.id as PaidRail)}
 				>
 					{#if m.id === 'lightning'}<Zap size={20} class="shrink-0" fill="currentColor" />{:else}<Bitcoin size={20} class="shrink-0" />{/if}
 					<span class="flex min-w-0 flex-col items-start leading-tight">
@@ -262,7 +288,7 @@
 		<QrCard value={qrValue} label={rail === 'onchain' ? t('pay.qrOnchain') : t('pay.qrLightning')}>
 			<div class="flex flex-col items-center gap-3.5 text-[0.9375rem] text-ink-soft">
 				<Spinner size={40} />
-				{t('pay.creating')}
+				{rail === 'onchain' && sale ? t('pay.gettingAddress') : t('pay.creating')}
 			</div>
 		</QrCard>
 
@@ -272,6 +298,16 @@
 				<span class="pulse h-[9px] w-[9px] shrink-0 rounded-full bg-current"></span>
 				{!sale ? t('pay.gettingReady') : offline ? t('pay.reconnecting') : t('pay.waiting')}
 			</p>
+			{#if partial}
+				<p role="status" class="max-w-[300px] rounded-md bg-warn-bg px-3.5 py-3 text-[0.9375rem] leading-snug text-warn">
+					{t('pay.partial', { seen: formatSats(partial.seen), owed: formatSats(partial.owed) })}
+				</p>
+			{/if}
+			{#if onchainError}
+				<p role="alert" class="max-w-[300px] rounded-md bg-err-bg px-3.5 py-3 text-[0.9375rem] leading-snug text-err">
+					{onchainError}
+				</p>
+			{/if}
 			{#if cancelError}
 				<p role="alert" class="max-w-[300px] rounded-md bg-err-bg px-3.5 py-3 text-[0.9375rem] leading-snug text-err">
 					{cancelError}
@@ -280,7 +316,7 @@
 		</div>
 
 		<div class="flex-1"></div>
-		{#if sale}
+		{#if sale && paymentText}
 			<button
 				type="button"
 				class="flex h-11 items-center gap-2 self-center rounded-md px-4 text-[0.9375rem] font-medium text-ink-soft active:bg-muted"

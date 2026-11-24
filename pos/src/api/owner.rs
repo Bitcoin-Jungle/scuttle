@@ -18,14 +18,15 @@ use utoipa::ToSchema;
 
 use crate::App;
 use crate::api::terminal::{CsvQuery, ListQuery, SalesPage, csv, list};
-use crate::api::{Owner, StoreView};
+use crate::api::{Owner, OwnerStoreView};
 use crate::brand::BrandKey;
 use crate::database::{Device, STORE_COLUMNS, Store};
 use crate::error::{ApiError, ApiResult, ErrorBody, bad_request, conflict, not_found};
 use crate::money::MAX_SAT;
+use crate::names;
 use crate::rails::onchain::StoreDescriptor;
 use crate::registration::Registration;
-use crate::token;
+use crate::{silent_payment, token};
 
 
 /// How far a registration timestamp may be from the server clock.
@@ -48,24 +49,24 @@ pub struct RegisterRequest {
 
 #[derive(Serialize, ToSchema)]
 pub struct StoreResponse {
-	store: StoreView,
+	store: OwnerStoreView,
 }
 
 /// Registers a store, signed by the owner's Ark key.
 ///
 /// The signed message is these lines, joined by `\n`, with no trailing
 /// newline: `posd registration v1`, then `name:`, `ark_address:`,
-/// `onchain_descriptor:`, `currency:`, `brand:`, `lightning_address_name:`
-/// and `timestamp:`, each followed by its field.
+/// `onchain_descriptor:`, `silent_payment_address:`, `currency:`, `brand:`,
+/// `lightning_address_name:` and `timestamp:`, each followed by its field.
 #[utoipa::path(
 	post, path = "/stores", tag = "owner", security(()),
 	request_body = RegisterRequest,
 	responses(
 		(status = 200, description = "The new store", body = StoreResponse),
-		(status = 400, description = "The signature, timestamp, address, descriptor, currency, \
-			brand or Lightning address name is not valid", body = ErrorBody),
+		(status = 400, description = "The signature, timestamp, address, descriptor, silent \
+			payment address, currency, brand or Lightning address name is not valid", body = ErrorBody),
 		(status = 409, description = "A store is registered for the address, or the Lightning \
-			address name is taken or reserved", body = ErrorBody),
+			address name is taken, reserved or held", body = ErrorBody),
 	),
 )]
 pub async fn register(
@@ -88,24 +89,34 @@ pub async fn register(
 	let ln_name = lightning_name(&reg.lightning_address_name)?;
 	StoreDescriptor::parse_for(&reg.onchain_descriptor, app.cfg.network)
 		.map_err(|e| bad_request(format!("{:#}", e)))?;
+	let sp_address = match reg.silent_payment_address.as_str() {
+		"" => None,
+		a => Some(silent_payment::parse(a, app.cfg.network)
+			.map_err(|e| bad_request(format!("silent_payment_address: {}", e)))?),
+	};
 
-	let conn = app.db.conn().await?;
+	let mut conn = app.db.conn().await?;
+	let tx = conn.transaction().await?;
 	if let Some(n) = &ln_name {
-		refuse_reserved(&*conn, &reg.brand, n).await?;
+		names::lock(&tx, &[(&reg.brand, n)]).await?;
+		names::refuse_reserved(&tx, &reg.brand, n).await?;
+		names::take_held(&tx, &reg.brand, n, None).await?;
 	}
-	let row = conn.query_opt(&format!("
-		INSERT INTO store AS s (name, ark_address, onchain_descriptor, currency, brand,
-			onchain_min_sat, lightning_address_name, registration_signature)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+	let row = tx.query_opt(&format!("
+		INSERT INTO store AS s (name, ark_address, onchain_descriptor, silent_payment_address,
+			currency, brand, onchain_min_sat, lightning_address_name, registration_signature)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		ON CONFLICT (ark_address) DO NOTHING
 		RETURNING {}
 	", STORE_COLUMNS), &[
-		&name, &ark_address.to_string(), &reg.onchain_descriptor, &reg.currency, &reg.brand.as_str(),
-		&(app.cfg.sales.default_onchain_min_sat as i64), &ln_name, &signature.to_string(),
+		&name, &ark_address.to_string(), &reg.onchain_descriptor, &sp_address, &reg.currency,
+		&reg.brand.as_str(), &(app.cfg.sales.default_onchain_min_sat as i64), &ln_name,
+		&signature.to_string(),
 	]).await.map_err(lightning_name_taken)?;
 	let store = row.map(|r| Store::from_row(&r))
 		.ok_or_else(|| conflict("a store is already registered for this Ark address"))?;
-	Ok(Json(StoreResponse { store: StoreView::new(&app, &store) }))
+	tx.commit().await?;
+	Ok(Json(StoreResponse { store: OwnerStoreView::new(&app, &store) }))
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -210,10 +221,10 @@ pub async fn login(
 /// The owner's store.
 #[utoipa::path(
 	get, path = "/owner/store", tag = "owner", security(("owner_token" = [])),
-	responses((status = 200, description = "The store", body = StoreView), (status = 401, description = "The token is missing, not valid, or expired", body = ErrorBody),),
+	responses((status = 200, description = "The store", body = OwnerStoreView), (status = 401, description = "The token is missing, not valid, or expired", body = ErrorBody),),
 )]
-pub async fn get_store(State(app): State<Arc<App>>, owner: Owner) -> Json<StoreView> {
-	Json(StoreView::new(&app, &owner.store))
+pub async fn get_store(State(app): State<Arc<App>>, owner: Owner) -> Json<OwnerStoreView> {
+	Json(OwnerStoreView::new(&app, &owner.store))
 }
 
 /// The fields to change. Fields left out stay as they are.
@@ -226,7 +237,9 @@ pub struct UpdateStore {
 	/// At most 21 million bitcoin.
 	onchain_min_sat: Option<u64>,
 	/// 1 to 64 lowercase letters, digits, `.`, `-` and `_`. An empty name
-	/// removes the Lightning address.
+	/// removes the Lightning address. A name the store gives up, by a new
+	/// name, an empty one or a move to another brand, is held for it for 90
+	/// days: no other store can take it, and the store can take it back.
 	#[schema(pattern = "^[a-z0-9._-]{0,64}$")]
 	lightning_address_name: Option<String>,
 }
@@ -241,18 +254,6 @@ pub(super) fn lightning_name_taken(e: tokio_postgres::Error) -> ApiError {
 	} else {
 		e.into()
 	}
-}
-
-/// Refuses `name` on `brand`'s domain if it is reserved: only the brand's
-/// operator assigns it.
-async fn refuse_reserved(conn: &impl tokio_postgres::GenericClient, brand: &BrandKey, name: &str) -> ApiResult<()> {
-	let reserved = conn.query_opt(
-		"SELECT 1 FROM reserved_name WHERE brand = $1 AND name = $2", &[&brand.as_str(), &name],
-	).await?.is_some();
-	if reserved {
-		return Err(conflict("that Lightning address is reserved"));
-	}
-	Ok(())
 }
 
 /// A store name, trimmed: 1 to 64 characters.
@@ -300,18 +301,18 @@ pub(super) fn valid_lightning_name(name: &str) -> bool {
 	patch, path = "/owner/store", tag = "owner", security(("owner_token" = [])),
 	request_body = UpdateStore,
 	responses(
-		(status = 200, description = "The store", body = StoreView),
+		(status = 200, description = "The store", body = OwnerStoreView),
 		(status = 400, description = "A field is not valid, or posd does not serve the brand", body = ErrorBody),
 		(status = 401, description = "The token is missing, not valid, or expired", body = ErrorBody),
-		(status = 409, description = "The Lightning address name is taken or reserved on the \
-			store's domain", body = ErrorBody),
+		(status = 409, description = "The Lightning address name is taken, reserved or held on \
+			the store's domain", body = ErrorBody),
 	),
 )]
 pub async fn update_store(
 	State(app): State<Arc<App>>,
 	owner: Owner,
 	Json(req): Json<UpdateStore>,
-) -> ApiResult<Json<StoreView>> {
+) -> ApiResult<Json<OwnerStoreView>> {
 	let name = req.name.as_deref().map(store_name).transpose()?;
 	if let Some(c) = &req.currency {
 		check_currency(&app, c)?;
@@ -326,23 +327,21 @@ pub async fn update_store(
 
 	let mut conn = app.db.conn().await?;
 	let tx = conn.transaction().await?;
-	// Lock the store, so two changes cannot each pass the reserved-name check
-	// against the store as it was and together end on a reserved name.
+	// Lock the store, so two changes cannot each pass the name checks
+	// against the store as it was.
 	let current = tx.query_one(
 		&format!("SELECT {} FROM store s WHERE s.id = $1 FOR UPDATE", STORE_COLUMNS),
 		&[&owner.store.id],
 	).await?;
 	let current = Store::from_row(&current);
-	// A name reserved on the domain the store ends up on cannot be taken by
-	// a rename or a move to another brand. Keeping a name is always allowed.
+	// The address the store has, and the one it ends up with: a rename and
+	// a move to another brand both change it.
 	let brand = req.brand.clone().unwrap_or_else(|| current.brand.clone());
 	let final_name = match &ln_name { Some(n) => n.clone(), None => current.lightning_address_name.clone() };
-	if let Some(n) = &final_name {
-		let unchanged = brand == current.brand && Some(n) == current.lightning_address_name.as_ref();
-		if !unchanged {
-			refuse_reserved(&tx, &brand, n).await?;
-		}
-	}
+	let old = current.lightning_address_name.as_deref().map(|n| (&current.brand, n));
+	let new = final_name.as_deref().map(|n| (&brand, n));
+	names::lock(&tx, &old.into_iter().chain(new).collect::<Vec<_>>()).await?;
+	names::change(&tx, current.id, old, new, false).await?;
 	let row = tx.query_one(&format!("
 		UPDATE store s SET
 			name = coalesce($2, name),
@@ -358,7 +357,7 @@ pub async fn update_store(
 		&brand.as_str(),
 	]).await.map_err(lightning_name_taken)?;
 	tx.commit().await?;
-	Ok(Json(StoreView::new(&app, &Store::from_row(&row))))
+	Ok(Json(OwnerStoreView::new(&app, &Store::from_row(&row))))
 }
 
 #[derive(Serialize, ToSchema)]

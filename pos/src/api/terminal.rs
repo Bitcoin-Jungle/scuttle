@@ -209,10 +209,36 @@ pub async fn create_sale(
 		_ => return Err(bad_request("give exactly one of fiat_amount and amount_sat")),
 	};
 	let sale = sales::create_sale(
-		&app, &t.store, Some(t.device.id), amount, req.currency.as_deref(), req.memo, false,
+		&app, &t.store, Some(t.device.id), amount, req.currency.as_deref(), req.memo,
 		request.as_ref(),
 	).await?;
 	Ok(Json(sale.into()))
+}
+
+/// Gives a sale its on-chain address, when the cashier picks on-chain.
+///
+/// A sale gets one address, so repeating the request returns the same one.
+/// A payer who already paid part of the amount to it sees the full amount
+/// in `onchain_uri`; the terminal shows what arrived from
+/// `onchain_received_sat` and `onchain_pending_sat`.
+#[utoipa::path(
+	post, path = "/sales/{id}/onchain", tag = "terminal", security(("device_token" = [])),
+	params(("id" = String, Path, description = "The sale id")),
+	responses(
+		(status = 200, description = "The sale, with its on-chain address", body = SaleView),
+		(status = 401, description = "The token is missing, not valid, or revoked", body = ErrorBody),
+		(status = 404, description = "No such sale in this store", body = ErrorBody),
+		(status = 409, description = "The sale is not open, is below the store's on-chain \
+			minimum, or the store has no unused address", body = ErrorBody),
+		(status = 502, description = "The chain source failed", body = ErrorBody),
+	),
+)]
+pub async fn add_onchain(
+	State(app): State<Arc<App>>,
+	t: Terminal,
+	Path(id): Path<String>,
+) -> ApiResult<Json<SaleView>> {
+	Ok(Json(sales::add_onchain(&app, &t.store, &id).await?.into()))
 }
 
 #[derive(Deserialize, IntoParams)]
@@ -221,6 +247,11 @@ pub struct WaitQuery {
 	/// most 25 seconds. Repeat it with the last state seen to follow a sale.
 	#[param(value_type = Option<SaleState>)]
 	wait: Option<String>,
+	/// With `wait`, also return when `onchain_received_sat +
+	/// onchain_pending_sat` is no longer this, so a terminal sees a partial
+	/// payment arrive.
+	#[param(minimum = 0)]
+	onchain_sat: Option<i64>,
 }
 
 /// A sale of the terminal's store, at once or by long-poll.
@@ -251,8 +282,9 @@ pub async fn get_sale(
 			let conn = app.db.conn().await?;
 			sales::get_sale(&*conn, t.store.id, &id).await?
 		};
+		let onchain_sat = sale.onchain_received_sat + sale.onchain_pending_sat;
 		let done = match wait {
-			Some(state) => sale.state != state,
+			Some(state) => sale.state != state || q.onchain_sat.is_some_and(|n| n != onchain_sat),
 			None => true,
 		};
 		let now = tokio::time::Instant::now();
@@ -303,6 +335,13 @@ pub async fn cancel_sale(
 			let sale = sales::get_sale(&*app.db.conn().await?, t.store.id, &id).await?;
 			return Err(conflict(format!("the sale is {}", sale.state)));
 		}
+	}
+	// Part of the amount arrived on-chain: the customer paid something, so
+	// the cashier takes the rest, or lets the sale expire with the part
+	// recorded.
+	let sale = sales::get_sale(&*app.db.conn().await?, t.store.id, &id).await?;
+	if sale.onchain_received_sat + sale.onchain_pending_sat > 0 {
+		return Err(conflict("part of the amount was paid on-chain"));
 	}
 
 	for p in payments.iter().filter(|p| p.rail == Rail::Lightning) {

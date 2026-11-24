@@ -261,6 +261,11 @@ async fn record(app: &App, p: &WatchedPayment, obs: &Observation) -> anyhow::Res
 	}
 	tx.commit().await?;
 
+	// A new on-chain amount without a new state, as a partial payment, is
+	// news for a terminal showing the sale.
+	if next.is_none() && p.rail == Rail::Onchain {
+		app.notify_sale_change();
+	}
 	if next == Some(SaleState::Paid) {
 		tracing::info!("sale {} paid by {}", p.sale_public_id, p.rail.as_str());
 		if p.rail != Rail::Lightning {
