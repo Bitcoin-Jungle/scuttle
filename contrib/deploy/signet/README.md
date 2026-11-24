@@ -81,14 +81,42 @@ does, posd refuses to start on the old database: stop posd, drop its
 database (`sudo -u postgres dropdb posd`) and run `setup.sh` again. Store
 owners then register again.
 
+## Boarding and the VTXO pool
+
+Boards need 5,000 sats or more. The server waits for 3 confirmations of a
+board on regtest (3 minutes) and 1 on signet (10 minutes). Rounds run every
+10 seconds, not the 10 minutes proposed for mainnet, so tests don't wait.
+The VTXO pool, which pays Lightning and same-server recipients, holds 40
+VTXOs each of 10,000, 50,000 and 100,000 sats and 20 of 300,000 sats. Pool
+VTXOs live 1,008 blocks and leave the pool with 432 left, so a recipient,
+such as a merchant, always gets 432 to 1,008 blocks: 3 to 7 days on
+signet and mainnet, about 7 to 17 hours on regtest. That is the window to
+open the wallet and refresh (or schedule a delegated refresh) before the
+VTXOs expire into a payout. Below 1,009 blocks left they also stay in the
+free Lightning send tier.
+
 ## Fees
 
-Board, offboard and refresh are free. A Lightning payment to or from the
-outside pays the send and receive fees that `captaind.default.toml` suggests
-for mainnet. A Lightning payment between two wallets of this server, such as
-a customer's wallet paying a store, is free on both sides
-(`[fees.intra_ark]`). A wallet's fee estimate and its movements show which
-kind a payment was.
+The test deployments use the fee schedule proposed for mainnet. There are
+no flat or minimum fees. Boarding and Lightning receives from outside cost
+0.20%. Offboards, Lightning sends and refreshes cost a share that grows
+with the blocks the spent VTXOs have left:
+
+| Blocks left | Lightning send out, or offboard | Same-server Lightning send | Refresh |
+|---:|---:|---:|---:|
+| 1–288 | 0% | 0% | 0.10% |
+| 289–1,008 | 0% | 0% | 0.20% |
+| 1,009–1,439 | 0.20% | 0.10% | 0.30% |
+| 1,440–2,159 | 0.35% | 0.175% | 0.45% |
+| 2,160–2,879 | 0.50% | 0.25% | 1.00% |
+| 2,880–3,599 | 0.50% | 0.25% | 1.50% |
+| 3,600+ | 0.50% | 0.25% | 2.00% |
+
+A Lightning payment between two wallets of this server, such as a
+customer paying a store, charges the sender half the outside rate and the
+receiver nothing (`[fees.intra_ark]`). Arkoor sends and receives are free.
+Offboards also pay their mining fee. A wallet's fee estimate and its
+movements show which kind a payment was.
 
 ## Secrets and data
 

@@ -169,7 +169,8 @@ board)
 		sleep 2
 	done
 	bark "$who" board --all >/dev/null || die "board failed: no confirmed on-chain coins?"
-	mine 1 >/dev/null
+	# Boards need 3 confirmations on regtest, 1 on signet.
+	if [ "$NETWORK" = regtest ]; then mine 3 >/dev/null; else mine 1 >/dev/null; fi
 	for i in $(seq 1 30); do
 		[ "$(bark "$who" balance | jq .pending_board_sat)" = 0 ] && break
 		sleep 2

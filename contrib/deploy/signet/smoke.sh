@@ -2,7 +2,7 @@
 # End-to-end check of a deployment. It registers a store from a bark
 # wallet, pairs a terminal, and has two sales paid: one by the external
 # Lightning node and one by a second bark wallet of the same Ark server,
-# which pays inside the Ark for free. The owner's wallet stays closed while
+# which pays inside the Ark at the same-server rate. The owner's wallet stays closed while
 # the sales are paid.
 #
 # Run after setup.sh and fund.sh. It creates its wallets under ~/smoke and
@@ -80,7 +80,8 @@ if [ "$(bark payer balance | jq '.spendable_sat')" -lt 100000 ]; then
 	mine 1
 	bark payer onchain sync >/dev/null 2>&1 || true
 	bark payer board --all >/dev/null
-	mine 2
+	# The server needs BOARD_CONFS confirmations (deploy.env), and one more.
+	mine $(( ${BOARD_CONFS:-1} + 1 ))
 	for i in $(seq 1 60); do
 		[ "$(bark payer balance | jq '.spendable_sat')" -ge 100000 ] && break
 		sleep 2
@@ -94,7 +95,10 @@ wait_state "$till" "$id" paid
 api GET "/api/v1/sales/$id" "$till" | jq -c '{state, paid_rail, received_sat}'
 fee=$(( before - $(bark payer balance | jq '.spendable_sat') - 30000 ))
 echo "payer fee: $fee sat"
-[ "$fee" -eq 0 ] || { echo "an intra-Ark payment must be free, the payer paid $fee sat" >&2; exit 1; }
+# Same-server Lightning charges the sender at most 0.25% (the highest
+# [fees.intra_ark] tier), half the outside rate.
+max_fee=$(( (30000 * 2500 + 999999) / 1000000 ))
+[ "$fee" -le "$max_fee" ] || { echo "a same-server payment cost $fee sat, over the $max_fee sat ceiling" >&2; exit 1; }
 
 echo "== the owner's wallet opens and holds the funds"
 bark owner sync >/dev/null 2>&1 || true

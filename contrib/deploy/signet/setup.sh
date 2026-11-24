@@ -34,12 +34,18 @@ signet)
 	# target or difficulty climbs out of reach for a CPU.
 	BLOCK_INTERVAL_SECS=600
 	RPC_PORT=38332
+	# At 10-minute blocks, more confirmations would make boards wait long.
+	BOARD_CONFS=1
+	TRUSTED_CONFS=1
 	;;
 regtest)
 	# Regtest never retargets: blocks can come at any pace, and any number
 	# can be mined on demand.
 	BLOCK_INTERVAL_SECS="${BLOCK_INTERVAL_SECS:-60}"
 	RPC_PORT=18443
+	# The confirmations proposed for mainnet: minutes here.
+	BOARD_CONFS=3
+	TRUSTED_CONFS=2
 	;;
 *) echo "NETWORK must be signet or regtest" >&2; exit 1 ;;
 esac
@@ -67,7 +73,7 @@ if sudo test -f "$ETC/deploy.env"; then
 	deployed=$(sudo sed -n 's/^NETWORK=//p' "$ETC/deploy.env")
 	[ "$deployed" = "$NETWORK" ] || { echo "this VM runs $deployed, not $NETWORK" >&2; exit 1; }
 fi
-printf 'NETWORK=%s\nRPC_PORT=%s\n' "$NETWORK" "$RPC_PORT" | sudo tee "$ETC/deploy.env" >/dev/null
+printf 'NETWORK=%s\nRPC_PORT=%s\nBOARD_CONFS=%s\n' "$NETWORK" "$RPC_PORT" "$BOARD_CONFS" | sudo tee "$ETC/deploy.env" >/dev/null
 sudo chown root:scuttle "$ETC/deploy.env"
 sudo chmod 640 "$ETC/deploy.env"
 
@@ -250,39 +256,65 @@ for i in $(seq 1 60); do
 done
 
 log "captaind and watchmand"
+# The fee schedule proposed for mainnet (Francis, 2026-11-24): percentages
+# only, no flat or minimum fees. Rates that depend on how many blocks the
+# spent VTXOs have left rise with it. Same-server Lightning charges the
+# sender half the external rate and the receiver nothing (the circular
+# economy discount); arkoor sends and receives are free.
 fees='[fees.board]
 min_fee_sat = 0
 base_fee_sat = 0
-ppm = 0
+ppm = 2000
+
 [fees.offboard]
 base_fee_sat = 0
 fixed_additional_vb = 221
-ppm_expiry_table = []
-[fees.refresh]
-base_fee_sat = 0
-ppm_expiry_table = []
-# Lightning to and from the outside costs what captaind.default.toml
-# suggests for mainnet. Lightning between two wallets of this server is
-# free, so a test shows which kind a payment was.
-[fees.lightning_receive]
-base_fee_sat = 100
-ppm = 2000
-[fees.lightning_send]
-min_fee_sat = 10
-base_fee_sat = 75
 ppm_expiry_table = [
     { expiry_blocks_threshold = 0, ppm = 0 },
-    { expiry_blocks_threshold = 97, ppm = 1000 },
-    { expiry_blocks_threshold = 199, ppm = 4000 },
-    { expiry_blocks_threshold = 2161, ppm = 8000 },
+    { expiry_blocks_threshold = 1009, ppm = 2000 },
+    { expiry_blocks_threshold = 1440, ppm = 3500 },
+    { expiry_blocks_threshold = 2160, ppm = 5000 },
 ]
+
+[fees.lightning_send]
+min_fee_sat = 0
+base_fee_sat = 0
+ppm_expiry_table = [
+    { expiry_blocks_threshold = 0, ppm = 0 },
+    { expiry_blocks_threshold = 1009, ppm = 2000 },
+    { expiry_blocks_threshold = 1440, ppm = 3500 },
+    { expiry_blocks_threshold = 2160, ppm = 5000 },
+]
+
+[fees.lightning_receive]
+base_fee_sat = 0
+ppm = 2000
+
 [fees.intra_ark.lightning_send]
 min_fee_sat = 0
 base_fee_sat = 0
-ppm_expiry_table = []
+ppm_expiry_table = [
+    { expiry_blocks_threshold = 0, ppm = 0 },
+    { expiry_blocks_threshold = 1009, ppm = 1000 },
+    { expiry_blocks_threshold = 1440, ppm = 1750 },
+    { expiry_blocks_threshold = 2160, ppm = 2500 },
+]
+
 [fees.intra_ark.lightning_receive]
 base_fee_sat = 0
-ppm = 0'
+ppm = 0
+
+[fees.refresh]
+base_fee_sat = 0
+ppm_expiry_table = [
+    { expiry_blocks_threshold = 0, ppm = 1000 },
+    { expiry_blocks_threshold = 289, ppm = 2000 },
+    { expiry_blocks_threshold = 1009, ppm = 3000 },
+    { expiry_blocks_threshold = 1440, ppm = 4500 },
+    { expiry_blocks_threshold = 2160, ppm = 10000 },
+    { expiry_blocks_threshold = 2880, ppm = 15000 },
+    { expiry_blocks_threshold = 3600, ppm = 20000 },
+]'
 pg_section() { # user, password, db
 	printf '[postgres]\nhost = "127.0.0.1"\nport = 5432\nname = "%s"\nuser = "%s"\npassword = "%s"\nmax_connections = 10\n' "$3" "$1" "$2"
 }
@@ -297,9 +329,10 @@ network = "$NETWORK"
 expiry_payouts = true
 vtxo_lifetime = 4320
 vtxo_exit_delta = 144
-min_board_amount = "20000 sat"
-required_board_confirmations = 1
-min_trusted_confs = 1
+min_board_amount = "5000 sat"
+required_board_confirmations = $BOARD_CONFS
+min_trusted_confs = $TRUSTED_CONFS
+# Mainnet would run a round every 10 minutes; tests should not wait that long.
 round_interval = "10s"
 round_submit_time = "2s"
 round_sign_time = "2s"
@@ -351,11 +384,16 @@ hold_invoice.client_key_path = "$DATA/cln-internal/$NETWORK/hold/client-key.pem"
 
 $fees
 
+# The pool shape proposed for mainnet. Pool VTXOs, which Lightning and
+# same-server recipients get (a merchant's sales), live 1,008 blocks and
+# leave the pool with 432 left, so a recipient always has 3 to 7 days to
+# open the wallet before they expire into a payout. Under 1,009 blocks left
+# they stay in the free send tier. (Proposed: 432 and 144, so 1 to 3 days.)
 [vtxopool]
-vtxo_targets = [ "10000sat:10", "100000sat:10", "1000000sat:5" ]
+vtxo_targets = [ "10000sat:40", "50000sat:40", "100000sat:40", "300000sat:20" ]
 vtxo_target_issue_threshold = 80
-vtxo_lifetime = 4320
-vtxo_pre_expiry = 2016
+vtxo_lifetime = 1008
+vtxo_pre_expiry = 432
 max_vtxo_exit_depth = 50
 
 [fee_estimator]
@@ -403,7 +441,7 @@ data_dir = "$DATA/watchmand"
 network = "$NETWORK"
 sync_manager_block_poll_interval = "100ms"
 htlc_settlement_poll_interval = "60s"
-min_trusted_confs = 1
+min_trusted_confs = $TRUSTED_CONFS
 otel_deployment_name = "scuttle-$NETWORK"
 admin_address = "127.0.0.1:4536"
 $sweep_setting
