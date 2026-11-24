@@ -574,6 +574,7 @@ impl TestContext {
 				min_cpfp_amount: Amount::from_sat(10_000),
 			},
 			sweep_address: Some(sweep_address.to_string().parse().expect("invalid sweep address")),
+			sweep_descriptor: None,
 			data_dir: data_dir.clone(),
 			network: Network::Regtest,
 			min_trusted_confs: 1,
