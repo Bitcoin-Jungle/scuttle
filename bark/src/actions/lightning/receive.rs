@@ -202,6 +202,9 @@ impl WalletAction for LightningReceive {
 	/// The step failed transiently. Retry it, unless the claim window
 	/// has closed or the claim retry budget is spent.
 	async fn on_retry(self, wallet: &Wallet, error: anyhow::Error) -> Advance<Self> {
+		if wallet.finish_paid_out_lightning_receive(&self).await {
+			return Advance::Done;
+		}
 		match &self.progress {
 			// No money committed; just back off. Expiry reaping happens in
 			// the step.
@@ -233,6 +236,9 @@ impl WalletAction for LightningReceive {
 	/// The step can't be completed as-is: the server rejected the request
 	/// or our own state is inconsistent.
 	async fn on_abort(self, wallet: &Wallet, error: anyhow::Error) -> Advance<Self> {
+		if wallet.finish_paid_out_lightning_receive(&self).await {
+			return Advance::Done;
+		}
 		match &self.progress {
 			// Nothing committed server-side: the executor removes the row
 			// when the action fails.
@@ -306,6 +312,11 @@ pub enum LightningReceiveState {
 	InProgress(LightningReceive),
 	Settled(SettledLightningReceive),
 }
+
+/// This wallet has neither a settled receipt nor a pending receive for the hash.
+#[derive(Debug, thiserror::Error)]
+#[error("no pending lightning receive found for this payment hash")]
+pub struct LightningReceiveNotFound;
 
 /// Outcome of polling the server for an inbound payment while in
 /// [`Progress::AwaitingPayment`].
@@ -443,7 +454,7 @@ pub(crate) async fn compute_lightning_receive_anti_dos(
 
 /// AwaitingPayment poll: ask the server whether an inbound payment has
 /// arrived without waiting.
-async fn check_incoming_lightning_payment(
+pub(crate) async fn check_incoming_lightning_payment(
 	wallet: &Wallet,
 	recv: &LightningReceive,
 ) -> Result<IncomingStatus, AdvanceError> {
@@ -674,6 +685,7 @@ async fn prepare_lightning_receive_htlcs(
 struct PreparedClaim {
 	srv: ServerConnection,
 	builder: ArkoorPackageBuilder<UserGeneratedNonces>,
+	package: protos::ArkoorPackageCosignRequest,
 	keypairs: Vec<Keypair>,
 }
 
@@ -714,7 +726,9 @@ async fn prepare_lightning_receive_claim(
 		.generate_user_nonces(&keypairs)
 		.context("arkoor nonce generation for claim failed").abort()?;
 
-	Ok(PreparedClaim { srv, builder, keypairs })
+	let mut package = protos::ArkoorPackageCosignRequest::from(builder.cosign_request());
+	wallet.bind_output_mailboxes(&mut package.parts, recv.claim_destination.as_ref()).await.abort()?;
+	Ok(PreparedClaim { srv, builder, package, keypairs })
 }
 
 /// Claiming -> done, or -> Delivering when the receive has a claim
@@ -733,14 +747,24 @@ async fn claim_lightning_receive_htlcs(
 	htlcs: &Htlcs,
 	claim: PreparedClaim,
 ) -> Result<Option<Delivery>, AdvanceError> {
-	let PreparedClaim { mut srv, builder, keypairs } = claim;
+	let PreparedClaim { mut srv, builder, package, keypairs } = claim;
 
 	info!("Claiming arkoor against payment preimage for {}", recv.payment_hash);
-	let package_cosign_request = protos::ArkoorPackageCosignRequest::from(builder.cosign_request());
+	if wallet.expiry_payouts().await {
+		// The server can settle the payment before its reply arrives, so in
+		// payout mode the disclosure is stored before the request leaves: a
+		// payout of the HTLC-recv VTXOs ends a local receive only from
+		// PreimageRevealed. A forwarded receive still needs delivery.
+		let checkpoint = LightningReceive {
+			progress: Progress::PreimageRevealed(htlcs.clone()),
+			..recv.clone()
+		};
+		wallet.inner.db.upsert_wallet_action_checkpoint(&recv.id(), &checkpoint.into()).await.retry()?;
+	}
 	let resp = srv.client.claim_lightning_receive(protos::ClaimLightningReceiveRequest {
 		payment_hash: recv.payment_hash.to_byte_array().to_vec(),
 		payment_preimage: recv.payment_preimage.to_vec(),
-		cosign_request: Some(package_cosign_request),
+		cosign_request: Some(package),
 	}).await.retry_unless_rejected()?.into_inner();
 
 	// The preimage is out, so from here on only retry: the server's
@@ -772,8 +796,7 @@ async fn claim_lightning_receive_htlcs(
 	// A destination owned by this wallet needs no mailbox delivery: the
 	// outputs are already keyed to one of our pubkeys.
 	let external_destination = match recv.claim_destination.as_ref() {
-		Some(destination) => wallet.pubkey_keypair(&destination.policy().user_pubkey())
-			.await.retry()?.is_none(),
+		Some(destination) => !wallet.is_own_address(destination).await.retry()?,
 		None => false,
 	};
 

@@ -1,0 +1,5 @@
+- Return 404 for a Lightning receive only when the wallet has none
+  `GET /api/v1/lightning/receives/{identifier}` returned 404 for any error
+  of the lookup. Other errors now return 500, so a client can tell a
+  receive that does not exist from one that could not be read.
+  [#21](https://github.com/SatoshiPortal/scuttle/pull/21)

@@ -337,6 +337,7 @@ impl Wallet {
 				break;
 			}
 		}
+		self.credit_pending_arkoor_receives().await?;
 
 		Ok(())
 	}
@@ -545,17 +546,30 @@ impl Wallet {
 			warn!("Failed to register received arkoor vtxo transactions with server: {:#}", e);
 		}
 
+		let new_vtxos = self.verify_received_arkoor_vtxos(new_vtxos).await?;
+		if new_vtxos.is_empty() {
+			return Ok(true);
+		}
+		self.credit_received_arkoor_vtxos(&new_vtxos).await?;
+		Ok(true)
+	}
+
+	/// Store VTXOs received by arkoor as spendable and record their receive.
+	pub(crate) async fn credit_received_arkoor_vtxos(
+		&self,
+		new_vtxos: &[Vtxo<Full>],
+	) -> anyhow::Result<()> {
 		// TODO: Make sure we don't effectively skip the entire package if the movement fails to
 		//       be recorded due to bark getting killed after this point.
 		let balance = new_vtxos
 			.iter()
 			.map(|vtxo| vtxo.amount()).sum::<Amount>()
 			.to_signed()?;
-		self.store_spendable_vtxos(&new_vtxos).await?;
+		self.store_spendable_vtxos(new_vtxos).await?;
 
 		// Build received_on destinations from received VTXOs, aggregated by address
 		let mut received_by_address = HashMap::<ark::Address, Amount>::new();
-		for vtxo in &new_vtxos {
+		for vtxo in new_vtxos {
 			if let Ok(Some((index, _))) = self.pubkey_keypair(&vtxo.user_pubkey()).await {
 				if let Ok(address) = self.peek_address(index).await {
 					*received_by_address.entry(address).or_default() += vtxo.amount();
@@ -572,14 +586,14 @@ impl Wallet {
 			ArkoorMovement::Receive.to_string(),
 			MovementStatus::Successful,
 			MovementUpdate::new()
-				.produced_vtxos(&new_vtxos)
+				.produced_vtxos(new_vtxos)
 				.intended_and_effective_balance(balance)
 				.received_on(received_on),
 		).await?;
 
 		info!("Received arkoor (movement {}) for {}", movement_id, balance);
 
-		Ok(true)
+		Ok(())
 	}
 
 	/// Handle a mailbox notice that a delegated round participation completed.

@@ -1,0 +1,6 @@
+- Report a Lightning receive that settles during a status lookup as settled
+  `Wallet::lightning_receive_state` reads the settled record again when it
+  finds neither a settled record nor a pending receive: a receive writes
+  its settled record before it removes its checkpoint. A receive the wallet
+  does not have returns `LightningReceiveNotFound`.
+  [#21](https://github.com/SatoshiPortal/scuttle/pull/21)

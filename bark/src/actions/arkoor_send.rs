@@ -15,7 +15,7 @@ use ark::vtxo::{Full, VtxoId, Vtxo};
 
 use crate::Wallet;
 use crate::actions::{
-	Advance, AdvanceError, IntoAdvanceResult, RetryUnlessRejected, WalletAction,
+	or_retry, Advance, AdvanceError, IntoAdvanceResult, RetryUnlessRejected, WalletAction,
 	WalletActionCheckpoint, WalletActionId,
 };
 use crate::arkoor::{post_arkoor_to_mailboxes, split_change_amount, DeliveryOutcome};
@@ -181,7 +181,14 @@ impl WalletAction for ArkoorSend {
 
 	/// The step can't be completed as-is: the server rejected the request
 	/// or our own state is inconsistent.
-	async fn on_abort(self, _wallet: &Wallet, error: anyhow::Error) -> Advance<Self> {
+	async fn on_abort(self, wallet: &Wallet, error: anyhow::Error) -> Advance<Self> {
+		let refunded = match &self.progress {
+			Progress::Registration { signed_destination_vtxos, .. } => {
+				or_retry!(self, wallet.is_refunded_arkoor(signed_destination_vtxos).await)
+			},
+			_ => false,
+		};
+
 		match self.progress {
 			// Nothing happened server-side, so the inputs go back to spendable
 			// when the executor tears the action down.
@@ -199,6 +206,18 @@ impl WalletAction for ArkoorSend {
 			Progress::Registration {
 				movement_id, signed_destination_vtxos, signed_change_vtxos,
 			} => {
+				// The server refunds the outputs to the sender on-chain, so the
+				// recipient gets nothing. The next sync marks the change spent.
+				if refunded {
+					return Advance::Next(ArkoorSend {
+						progress: Progress::Finalizing {
+							movement_id,
+							signed_change_vtxos,
+							delivery_succeeded: false,
+						},
+						..self
+					});
+				}
 				Advance::Next(ArkoorSend {
 					progress: Progress::Delivery {
 						movement_id,
@@ -306,7 +325,7 @@ async fn run_cosign(wallet: &Wallet, send: &ArkoorSend) -> Result<Progress, Adva
 	let neg_amount = -send.amount.to_signed().context("amount out-of-range").abort()?;
 
 	let arkoor = wallet.create_checkpointed_arkoor_with_vtxos(
-		dest, inputs, change_keypair, send.change_pieces.clone(),
+		dest, inputs, change_keypair, send.change_pieces.clone(), Some(&send.destination),
 	).await.retry_unless_rejected()?;
 
 	let initial_update = MovementUpdate::new()

@@ -11,7 +11,7 @@ use utoipa::ToSchema;
 use ark::{Vtxo, VtxoId};
 use ark::vtxo::{Full, VtxoPolicyKind};
 use bark::movement::MovementId;
-use bark::vtxo::VtxoState;
+use bark::vtxo::{ExpiryPayoutState, VtxoState};
 use bitcoin_ext::{BlockDelta, BlockHeight};
 
 /// Reference to a block in the blockchain.
@@ -164,6 +164,31 @@ impl From<Vtxo<Full>> for VtxoInfo {
 	}
 }
 
+/// The state of the expiry payout of a VTXO, as an Ark server in expiry
+/// payout mode reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "utoipa", derive(ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum ExpiryPayoutStateInfo {
+	/// The payout transaction is less than six blocks deep.
+	Pending,
+	/// The payout transaction is at least six blocks deep.
+	Paid,
+	/// The payout fee is not less than the VTXO amount, so the server pays
+	/// nothing.
+	Forfeited,
+}
+
+impl From<ExpiryPayoutState> for ExpiryPayoutStateInfo {
+	fn from(state: ExpiryPayoutState) -> Self {
+		match state {
+			ExpiryPayoutState::Pending => Self::Pending,
+			ExpiryPayoutState::Paid => Self::Paid,
+			ExpiryPayoutState::Forfeited => Self::Forfeited,
+		}
+	}
+}
+
 /// A VTXO together with its current wallet state.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[cfg_attr(feature = "utoipa", derive(ToSchema))]
@@ -173,6 +198,10 @@ pub struct WalletVtxoInfo {
 	pub vtxo: VtxoInfo,
 	/// The current state of this VTXO in the wallet.
 	pub state: VtxoStateInfo,
+	/// The state of the expiry payout of this VTXO, if the Ark server
+	/// decided one.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub expiry_payout: Option<ExpiryPayoutStateInfo>,
 }
 
 impl<'a> From<&'a bark::WalletVtxo> for WalletVtxoInfo {
@@ -190,6 +219,7 @@ impl<'a> From<&'a bark::WalletVtxo> for WalletVtxoInfo {
 				exit_depth: Some(v.exit_depth),
 			},
 			state: VtxoStateInfo::from(&v.state),
+			expiry_payout: v.expiry_payout_state.map(Into::into),
 		}
 	}
 }
@@ -251,7 +281,10 @@ impl<'a> From<&'a VtxoState> for VtxoStateInfo {
 					Some(bark::vtxo::VtxoLockHolder::Action { id }) => {
 						VtxoStateInfo::Locked { movement_id: None, action_id: Some(id.clone()) }
 					},
-					None => VtxoStateInfo::Locked { movement_id: None, action_id: None },
+					Some(bark::vtxo::VtxoLockHolder::MailboxReceive)
+						| Some(bark::vtxo::VtxoLockHolder::RoundPayoutCheck)
+						| None
+					=> VtxoStateInfo::Locked { movement_id: None, action_id: None },
 				}
 			},
 		}

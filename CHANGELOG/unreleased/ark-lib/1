@@ -1,0 +1,4 @@
+- Add the expiry payout script
+  `expiry_payout::payout_script` returns the payout output `tr(M)` of an
+  owner mailbox key.
+  [#1](https://github.com/SatoshiPortal/scuttle/pull/1)

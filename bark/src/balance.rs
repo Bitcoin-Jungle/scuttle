@@ -17,7 +17,7 @@ use ark::VtxoId;
 use crate::{Wallet, WalletVtxo};
 use crate::actions::{WalletAction, WalletActionCheckpoint};
 use crate::exit::ExitStateKind;
-use crate::vtxo::{VtxoState, VtxoStateKind};
+use crate::vtxo::{VtxoLockHolder, VtxoState, VtxoStateKind};
 
 /// The different balances of a Bark wallet.
 ///
@@ -180,6 +180,16 @@ impl Wallet {
 				if held && counted.insert(vtxo.id()) {
 					balance.pending_in_round += vtxo.amount();
 				}
+			}
+		}
+
+		// A round output that a server in expiry payout mode has not yet
+		// reported bound to this wallet's mailbox. Its round is done, so no
+		// round state holds it.
+		let payout_check = VtxoState::Locked { holder: Some(VtxoLockHolder::RoundPayoutCheck) };
+		for vtxo in vtxos.values().filter(|v| v.state == payout_check) {
+			if counted.insert(vtxo.id()) {
+				balance.pending_in_round += vtxo.amount();
 			}
 		}
 

@@ -4,7 +4,7 @@ use bitcoin::Amount;
 
 use ark::VtxoId;
 use bark::actions::WalletAction;
-use bark::vtxo::VtxoState;
+use bark::vtxo::{VtxoLockHolder, VtxoState};
 
 /// Fetch the balance, syncing first when `sync` is set, and assert that it
 /// agrees with the wallet's VTXOs and operations: the spendable sats are the
@@ -48,10 +48,12 @@ pub async fn assert_balance_consistent(wallet: &bark::Wallet, sync: bool) -> bar
 		"needs_refresh must equal the expired or depth-limited spendable VTXOs: {balance:?}",
 	);
 
-	let round_ids = wallet.pending_round_input_vtxos().await.expect("round inputs")
+	let mut round_ids = wallet.pending_round_input_vtxos().await.expect("round inputs")
 		.iter().map(|v| v.id()).collect::<Vec<_>>();
+	let payout_check = VtxoState::Locked { holder: Some(VtxoLockHolder::RoundPayoutCheck) };
+	round_ids.extend(vtxos.iter().filter(|v| v.state == payout_check).map(|v| v.id()));
 	assert_eq!(balance.pending_in_round, locked_amount_of(&round_ids),
-		"pending_in_round must equal the locked round inputs: {balance:?}",
+		"pending_in_round must equal the locked round inputs and outputs: {balance:?}",
 	);
 
 	let board_ids = wallet.pending_board_vtxos().await.expect("pending board vtxos")

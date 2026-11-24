@@ -1,0 +1,7 @@
+- Ask the Ark server before canceling a Lightning receive
+  `Wallet::cancel_lightning_receive` needs the Ark server for an invoice
+  that is waiting for payment. When the server does not cancel the
+  invoice, the wallet asks it for the payment status and cancels only if
+  no payment has arrived or the server already canceled the invoice. A
+  payment that the server accepted stays claimable.
+  [#24](https://github.com/SatoshiPortal/scuttle/pull/24)

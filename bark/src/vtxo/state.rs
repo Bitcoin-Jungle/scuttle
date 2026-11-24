@@ -31,6 +31,7 @@ use ark::Vtxo;
 use ark::vtxo::{Bare, Full, VtxoRef};
 
 use crate::actions::WalletActionId;
+use crate::expiry_payout::ExpiryPayoutState;
 use crate::movement::MovementId;
 
 /// What kind of entity holds a [VtxoState::Locked] reservation.
@@ -46,6 +47,13 @@ pub enum VtxoLockHolder {
 	/// The movement of the operation that holds the lock.
 	#[deprecated(note = "lock vtxos with an Action holder")]
 	Movement { id: MovementId },
+	/// A VTXO received by arkoor that a server in expiry payout mode does
+	/// not report spendable yet. The wallet credits it once the server does.
+	MailboxReceive,
+	/// A round output that a server in expiry payout mode does not report
+	/// bound to this wallet's mailbox yet. The wallet releases it once the
+	/// server does.
+	RoundPayoutCheck,
 }
 
 const SPENDABLE: &'static str = "Spendable";
@@ -190,6 +198,11 @@ pub struct WalletVtxo {
 	/// migration can reset it to re-upload every VTXO.
 	#[serde(default)]
 	pub registered: bool,
+
+	/// The expiry payout state that a server in expiry payout mode last
+	/// reported for this VTXO. The VTXO stays spent if a reorg changes it.
+	#[serde(default)]
+	pub expiry_payout_state: Option<ExpiryPayoutState>,
 }
 
 impl VtxoRef for WalletVtxo {

@@ -408,13 +408,13 @@ impl Wallet {
 			.generate_user_nonces();
 
 		let cosign_resp = srv.client.request_board_cosign(protos::BoardCosignRequest {
-			owner_mailbox: None,
 			amount: amount.to_sat(),
 			utxo: bitcoin::consensus::serialize(&utxo), //TODO(stevenroose) change to own
 			expiry_height: expiry_height.into(),
 			user_pubkey: user_keypair.public_key().serialize().to_vec(),
 			pub_nonce: builder.user_pub_nonce().serialize().to_vec(),
 			funding_tx: bitcoin::consensus::serialize(&board_psbt.unsigned_tx),
+			owner_mailbox: self.board_owner_mailbox().await,
 		}).await.context("error requesting board cosign")?
 			.into_inner().try_into().context("invalid cosign response from server")?;
 
