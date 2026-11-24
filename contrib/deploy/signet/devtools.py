@@ -347,7 +347,7 @@ class Handler(BaseHTTPRequestHandler):
 			try:
 				return self.reply(200, status({}))
 			except Exception as e:  # noqa: BLE001
-				return self.reply(502, {"error": str(e)})
+				return self.reply(500, {"error": str(e)})
 		if endpoint == "api":
 			return self.reply(200, __doc__, "text/plain; charset=utf-8")
 		self.reply(404, {"error": "no such endpoint"})
@@ -369,7 +369,9 @@ class Handler(BaseHTTPRequestHandler):
 		except (ValueError, TypeError, KeyError) as e:
 			self.reply(400, {"error": str(e)})
 		except Exception as e:  # noqa: BLE001 - report bitcoind and CLN errors to the caller
-			self.reply(502, {"error": str(e)})
+			# Not 502: Cloudflare puts its own error page in place of an
+			# origin's 502 body, and the page would show only the status.
+			self.reply(422, {"error": str(e)})
 
 	def log_message(self, fmt: str, *args) -> None:
 		print(f"{self.client()} {fmt % args}", flush=True)
