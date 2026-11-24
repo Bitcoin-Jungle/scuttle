@@ -160,11 +160,14 @@ terminal sends it: when it is not the store's, as after the owner changed
 it, the sale is refused with `409` instead of charging the amount in
 another currency.
 
-A cancel first checks the sale's on-chain address, then cancels the
-Lightning invoice with barkd. When a payment was made on either rail, the
-sale is not canceled: the cancel is `409`, and the sale soon shows
-`in-progress` or `paid`. When barkd fails to cancel an unpaid invoice, the
-cancel is `502` and the sale stays open.
+A cancel first checks the sale's on-chain address, then asks barkd to
+cancel the Lightning invoice. barkd forgets an unpaid invoice and posd stops
+watching it. The Ark server does not cancel invoices, so the invoice stays
+payable until it expires, and a payment made to it after the cancel is not
+delivered to the owner. When a payment was made on either rail, the sale is
+not canceled: the cancel is `409`, and the sale soon shows `in-progress` or
+`paid`. When barkd fails to cancel an unpaid invoice, the cancel is `502` and
+the sale stays open.
 
 `POST /api/v1/sales` takes an optional `Idempotency-Key` header: 1 to 64
 letters, digits, `-` or `_`, unique per sale on the device. A request

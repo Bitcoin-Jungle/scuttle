@@ -265,9 +265,11 @@ pub async fn get_sale(
 
 /// Cancels an open sale.
 ///
-/// posd first checks the sale's on-chain address, then cancels the
-/// Lightning invoice. When a payment was made or is arriving, the sale is
-/// not canceled: it is `409`, and the sale soon shows its new state.
+/// posd first checks the sale's on-chain address, then asks barkd to cancel
+/// the Lightning invoice. barkd forgets an unpaid invoice; the Ark server
+/// keeps it payable until it expires. When a payment was made or is
+/// arriving, the sale is not canceled: it is `409`, and the sale soon shows
+/// its new state.
 #[utoipa::path(
 	post, path = "/sales/{id}/cancel", tag = "terminal", security(("device_token" = [])),
 	params(("id" = String, Path, description = "The sale id")),

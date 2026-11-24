@@ -1157,7 +1157,7 @@
           "terminal"
         ],
         "summary": "Cancels an open sale.",
-        "description": "posd first checks the sale's on-chain address, then cancels the\nLightning invoice. When a payment was made or is arriving, the sale is\nnot canceled: it is `409`, and the sale soon shows its new state.",
+        "description": "posd first checks the sale's on-chain address, then asks barkd to cancel\nthe Lightning invoice. barkd forgets an unpaid invoice; the Ark server\nkeeps it payable until it expires. When a payment was made or is\narriving, the sale is not canceled: it is `409`, and the sale soon shows\nits new state.",
         "operationId": "cancel_sale",
         "parameters": [
           {
