@@ -88,6 +88,7 @@ export interface ClientOptions {
 /** Long-poll requests wait up to 25 s on the server. */
 const WAIT_TIMEOUT_MS = 35_000
 const DEFAULT_TIMEOUT_MS = 15_000
+const CARD_TIMEOUT_MS = 30_000
 
 export class PosClient {
 	private readonly baseUrl: string
@@ -141,6 +142,16 @@ export class PosClient {
 	/** Gives the sale its on-chain address, when the cashier picks on-chain. */
 	addOnchain(id: string): Promise<Sale> {
 		return this.json('POST', `/api/v1/sales/${encodeURIComponent(id)}/onchain`)
+	}
+
+	/**
+	 * Has a Bolt Card pay the sale: posd follows the link the terminal read
+	 * from the card. The sale is still open when this returns; the payment
+	 * arrives a moment later. A 422 carries the card's reason.
+	 */
+	payWithCard(id: string, link: string): Promise<Sale> {
+		// posd waits for the card's service, up to 10 s per request.
+		return this.json('POST', `/api/v1/sales/${encodeURIComponent(id)}/bolt-card`, { link }, { timeoutMs: CARD_TIMEOUT_MS })
 	}
 
 	cancelSale(id: string): Promise<Sale> {

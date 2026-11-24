@@ -15,6 +15,7 @@ use utoipa::{IntoParams, ToSchema};
 
 use crate::App;
 use crate::api::{StoreView, Terminal};
+use crate::bolt_card::CardError;
 use crate::database::{Rail, STORE_COLUMNS, SaleState, Store};
 use crate::error::{ApiError, ApiResult, ErrorBody, bad_request, conflict, not_found};
 use crate::money::{Decimal, MAX_SAT};
@@ -239,6 +240,67 @@ pub async fn add_onchain(
 	Path(id): Path<String>,
 ) -> ApiResult<Json<SaleView>> {
 	Ok(Json(sales::add_onchain(&app, &t.store, &id).await?.into()))
+}
+
+/// The longest card link posd takes.
+const MAX_CARD_LINK_LEN: usize = 2048;
+
+#[derive(Deserialize, ToSchema)]
+pub struct CardPayment {
+	/// What the terminal read from the card's NFC tag: an `lnurlw://` link,
+	/// as Bolt Cards hold, or a bech32 LNURL. It changes on every tap.
+	#[schema(example = "lnurlw://card.example.com/ln?p=4E2F…&c=8A1B…")]
+	link: String,
+}
+
+/// Pays a sale with a Bolt Card the customer tapped on the terminal.
+///
+/// posd follows the card's LNURL-withdraw link (LUD-03) and has the card's
+/// service pay the sale's Lightning invoice. The answer only means the
+/// service took the invoice: the payment arrives a moment later, and the
+/// terminal sees the sale paid as with any other Lightning payment.
+/// A `422` carries the service's reason, as for a card with too low a
+/// balance, or the card's limits when the amount is outside them.
+#[utoipa::path(
+	post, path = "/sales/{id}/bolt-card", tag = "terminal", security(("device_token" = [])),
+	params(("id" = String, Path, description = "The sale id")),
+	request_body = CardPayment,
+	responses(
+		(status = 200, description = "The card's service is paying; the sale, still open", body = SaleView),
+		(status = 400, description = "The link is not an LNURL-withdraw link posd may follow", body = ErrorBody),
+		(status = 401, description = "The token is missing, not valid, or revoked", body = ErrorBody),
+		(status = 404, description = "No such sale in this store", body = ErrorBody),
+		(status = 409, description = "The sale is not open, or expired", body = ErrorBody),
+		(status = 422, description = "The card refused, with its reason", body = ErrorBody),
+		(status = 502, description = "The card's service could not be reached", body = ErrorBody),
+	),
+)]
+pub async fn pay_with_card(
+	State(app): State<Arc<App>>,
+	t: Terminal,
+	Path(id): Path<String>,
+	Json(req): Json<CardPayment>,
+) -> ApiResult<Json<SaleView>> {
+	if req.link.len() > MAX_CARD_LINK_LEN {
+		return Err(bad_request("the card's link is too long"));
+	}
+	let sale = {
+		let conn = app.db.conn().await?;
+		sales::get_sale(&*conn, t.store.id, &id).await?
+	};
+	if sale.state != SaleState::Open {
+		return Err(conflict(format!("the sale is {}", sale.state)));
+	}
+	if sale.expires_at <= Utc::now() {
+		return Err(conflict("the sale expired"));
+	}
+	app.bolt_cards.pay(&req.link, &sale.lightning_invoice, sale.amount_sat as u64).await
+		.map_err(|e| match e {
+			CardError::BadLink(m) => bad_request(m),
+			CardError::Declined(m) => ApiError::Declined(m),
+			CardError::Unreachable(e) => ApiError::Upstream(e),
+		})?;
+	Ok(Json(sale.into()))
 }
 
 #[derive(Deserialize, IntoParams)]

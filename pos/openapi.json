@@ -1192,6 +1192,114 @@
         ]
       }
     },
+    "/api/v1/sales/{id}/bolt-card": {
+      "post": {
+        "tags": [
+          "terminal"
+        ],
+        "summary": "Pays a sale with a Bolt Card the customer tapped on the terminal.",
+        "description": "posd follows the card's LNURL-withdraw link (LUD-03) and has the card's\nservice pay the sale's Lightning invoice. The answer only means the\nservice took the invoice: the payment arrives a moment later, and the\nterminal sees the sale paid as with any other Lightning payment.\nA `422` carries the service's reason, as for a card with too low a\nbalance, or the card's limits when the amount is outside them.",
+        "operationId": "pay_with_card",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The sale id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CardPayment"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The card's service is paying; the sale, still open",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaleView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The link is not an LNURL-withdraw link posd may follow",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The token is missing, not valid, or revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such sale in this store",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The sale is not open, or expired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The card refused, with its reason",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The card's service could not be reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
     "/api/v1/sales/{id}/cancel": {
       "post": {
         "tags": [
@@ -1501,6 +1609,19 @@
               "type": "object"
             },
             "description": "Always empty."
+          }
+        }
+      },
+      "CardPayment": {
+        "type": "object",
+        "required": [
+          "link"
+        ],
+        "properties": {
+          "link": {
+            "type": "string",
+            "description": "What the terminal read from the card's NFC tag: an `lnurlw://` link,\nas Bolt Cards hold, or a bech32 LNURL. It changes on every tap.",
+            "example": "lnurlw://card.example.com/ln?p=4E2F…&c=8A1B…"
           }
         }
       },

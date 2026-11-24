@@ -986,3 +986,104 @@ async fn pos_demo() {
 		tokio::time::sleep(Duration::from_millis(500)).await;
 	}
 }
+
+/// A Bolt Card's service, as LUD-03 has it: the link gives a withdraw
+/// request, and its callback takes the invoice to pay. It hands each
+/// invoice to the test, which pays it, as a card's service would.
+struct CardService {
+	url: String,
+	invoices: tokio::sync::mpsc::UnboundedReceiver<String>,
+	server: tokio::task::JoinHandle<()>,
+}
+
+impl CardService {
+	/// A card that pays up to `max_sat` at a time, or that refuses with
+	/// `decline` when it is set.
+	async fn start(max_sat: u64, decline: Option<&'static str>) -> CardService {
+		use axum::extract::Query;
+		use axum::http::header::CONTENT_TYPE;
+		use std::collections::HashMap;
+
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let url = format!("http://{}", listener.local_addr().unwrap());
+		let (tx, invoices) = tokio::sync::mpsc::unbounded_channel();
+		let callback = format!("{}/cb?card=1", url);
+		let json = |v: Value| ([(CONTENT_TYPE, "application/json")], v.to_string());
+		let router = axum::Router::new()
+			.route("/ln", axum::routing::get(move || async move {
+				json(json!({
+					"tag": "withdrawRequest", "callback": callback, "k1": "k1-of-this-tap",
+					"minWithdrawable": 1_000, "maxWithdrawable": max_sat * 1000,
+					"defaultDescription": "Bolt Card",
+				}))
+			}))
+			.route("/cb", axum::routing::get(move |Query(q): Query<HashMap<String, String>>| async move {
+				assert_eq!(q.get("card").map(String::as_str), Some("1"), "the callback keeps its query");
+				assert_eq!(q.get("k1").map(String::as_str), Some("k1-of-this-tap"));
+				if let Some(reason) = decline {
+					return json(json!({ "status": "ERROR", "reason": reason }));
+				}
+				tx.send(q["pr"].clone()).unwrap();
+				json(json!({ "status": "OK" }))
+			}));
+		let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+		CardService { url, invoices, server }
+	}
+
+	/// The link on the card, as the terminal reads it with NFC. A real
+	/// card's `lnurlw://` means https, which the test service does not
+	/// speak, so it holds the plain URL.
+	fn link(&self) -> String {
+		format!("{}/ln?p=A1B2&c=C3D4", self.url)
+	}
+}
+
+impl Drop for CardService {
+	fn drop(&mut self) {
+		self.server.abort();
+	}
+}
+
+/// A customer taps a Bolt Card: the terminal gives posd the card's link,
+/// posd has the card's service pay the sale's invoice, and the sale is paid.
+#[tokio::test]
+async fn pos_sale_paid_by_bolt_card() {
+	let ctx = TestContext::new("pos/pos_sale_paid_by_bolt_card").await;
+	let store = store_setup(&ctx).await;
+	let posd = &store.posd;
+	let till = Some(store.till.as_str());
+	let card_path = |sale: &Value| format!("/api/v1/sales/{}/bolt-card", sale["id"].as_str().unwrap());
+
+	let sale = new_sale(&store, json!({ "amount_sat": 20_000, "memo": "card" })).await;
+
+	// A card that pays less than the sale, and one its service refuses: the
+	// cashier sees why.
+	let small = CardService::start(10_000, None).await;
+	let (status, body) = posd.call(Method::POST, &card_path(&sale), till,
+		Some(json!({ "link": small.link() }))).await;
+	assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{}", body);
+	assert!(body["error"].as_str().unwrap().contains("10000 sats"), "{}", body);
+	let broke = CardService::start(1_000_000, Some("insufficient balance")).await;
+	let (status, body) = posd.call(Method::POST, &card_path(&sale), till,
+		Some(json!({ "link": broke.link() }))).await;
+	assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{}", body);
+	assert_eq!(body["error"], "insufficient balance");
+	// Not a card.
+	let (status, _) = posd.call(Method::POST, &card_path(&sale), till,
+		Some(json!({ "link": "bitcoin:bcrt1qxyz" }))).await;
+	assert_eq!(status, StatusCode::BAD_REQUEST);
+
+	let mut card = CardService::start(1_000_000, None).await;
+	let open = posd.ok(Method::POST, &card_path(&sale), till, Some(json!({ "link": card.link() }))).await;
+	assert_eq!(open["state"], "open");
+	let invoice = card.invoices.recv().await.unwrap();
+	assert_eq!(invoice, sale["lightning_invoice"].as_str().unwrap(), "the card pays the sale's invoice");
+	store.lightning.external.pay_bolt11(&invoice).await;
+	let paid = posd.wait_sale_state(&store.till, sale["id"].as_str().unwrap(), "paid", SALE_TIMEOUT).await;
+	assert_eq!(paid["paid_rail"], "lightning");
+
+	// A paid sale takes no second tap.
+	let (status, _) = posd.call(Method::POST, &card_path(&sale), till,
+		Some(json!({ "link": card.link() }))).await;
+	assert_eq!(status, StatusCode::CONFLICT);
+}

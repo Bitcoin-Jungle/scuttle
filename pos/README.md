@@ -23,6 +23,10 @@ the QR's alphanumeric mode. The on-chain address is made only when the
 cashier picks on-chain, so the owner's descriptor is not used up by sales
 paid by Lightning. A partial on-chain payment shows at the till.
 
+On Chrome for Android the terminal also takes Bolt Cards: the customer taps
+the card on the phone, the terminal reads its LNURL-withdraw link with NFC,
+and posd has the card's service pay the sale's Lightning invoice.
+
 The API is in [docs/api.md](docs/api.md), with the generated OpenAPI document
 in [openapi.json](openapi.json).
 

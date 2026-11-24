@@ -2,18 +2,20 @@
 	// The payment screen: the amount, a QR code for the rail the payer picks,
 	// and the payment state, kept current with posd's long-poll.
 	import { untrack } from 'svelte'
-	import { Bitcoin, Clock, Copy, Search, Share2, X, Zap } from 'lucide-svelte'
+	import { Bitcoin, Clock, Copy, Nfc, Search, Share2, X, Zap } from 'lucide-svelte'
 	import { t } from '$lib/i18n/index.svelte'
 	import { ApiError, type PaidRail, type Sale } from '$lib/api'
 	import { restoreDraft } from '$lib/draft.svelte'
 	import { formatFiat, formatSats } from '$lib/money'
 	import { router } from '$lib/router.svelte'
 	import { countdown, isLive, lightningQr, onchainQr, onchainSeen, partialPayment, railLabel, saleAmountLabel } from '$lib/sale'
+	import { nfcSupported } from '$lib/bolt-card'
 	import { retryDelay } from '$lib/retry'
 	import { cachedSale, rememberSale } from '$lib/sale-cache'
 	import { client, session } from '$lib/session.svelte'
 	import { startSale } from '$lib/start-sale.svelte'
 	import Spinner from '$lib/components/Spinner.svelte'
+	import CardTap from '$lib/components/CardTap.svelte'
 	import PaidScreen from '$lib/components/PaidScreen.svelte'
 	import QrCard from '$lib/components/QrCard.svelte'
 	import StatusScreen from '$lib/components/StatusScreen.svelte'
@@ -26,7 +28,13 @@
 	let canceling = $state(false)
 	let cancelError = $state<string | null>(null)
 	let nowMs = $state(Date.now())
-	let rail = $state<PaidRail>('lightning')
+	/** What the payer pays with: a rail's code, or a Bolt Card, which pays by Lightning. */
+	type Method = PaidRail | 'card'
+	let rail = $state<Method>('lightning')
+	// Only Chrome on Android reads NFC: elsewhere there is no card tab.
+	const cards = nfcSupported()
+	// Three tabs leave no room for icons on a narrow phone.
+	const iconClass = cards ? 'shrink-0 max-[400px]:hidden' : 'shrink-0'
 	let copied = $state(false)
 	let gettingOnchain = $state(false)
 	let onchainError = $state<string | null>(null)
@@ -137,19 +145,21 @@
 	})
 	// No code under On-chain until the address arrives: showing the
 	// Lightning code there would have the payer scan the wrong one.
-	const qrValue = $derived(sale ? (rail === 'onchain' ? onchain : lightningQr(sale)) : null)
+	const qrValue = $derived(sale ? (rail === 'onchain' ? onchain : rail === 'card' ? null : lightningQr(sale)) : null)
 	const partial = $derived(sale ? partialPayment(sale) : null)
 
 	// The payment for the shown rail, as a wallet takes it pasted or shared:
 	// the invoice, or a BIP 21 URI so the amount comes along.
-	const paymentText = $derived(sale ? (rail === 'onchain' ? (sale.onchain_uri ?? '') : sale.lightning_invoice) : '')
+	const paymentText = $derived(
+		!sale || rail === 'card' ? '' : rail === 'onchain' ? (sale.onchain_uri ?? '') : sale.lightning_invoice,
+	)
 
 	/**
 	 * Shows a rail. On-chain gets its address now, the first time: posd
 	 * makes one only for a sale the payer may pay on-chain, so addresses the
 	 * owner's wallet must scan for are not used up by Lightning sales.
 	 */
-	async function pick(next: PaidRail) {
+	async function pick(next: Method) {
 		rail = next
 		copied = false
 		onchainError = null
@@ -277,8 +287,8 @@
 			<p class="text-[0.9375rem] tabular-nums text-ink-soft">{amountDetail || '\u00a0'}</p>
 		</div>
 
-		<div class="grid shrink-0 grid-cols-2 gap-1 rounded-lg bg-muted p-1" role="tablist" aria-label={t('pay.method')}>
-			{#each [{ id: 'lightning', sub: t('pay.instant'), ok: true }, { id: 'onchain', sub: !sale || sale.onchain_available ? t('pay.onchainTime') : t('pay.onchainFrom', { amount: onchainFrom }), ok: !!sale?.onchain_available }] as m (m.id)}
+		<div class={`grid shrink-0 gap-1 rounded-lg bg-muted p-1 ${cards ? 'grid-cols-3' : 'grid-cols-2'}`} role="tablist" aria-label={t('pay.method')}>
+			{#each [{ id: 'lightning', label: railLabel('lightning'), sub: t('pay.instant'), ok: true }, { id: 'onchain', label: railLabel('onchain'), sub: !sale || sale.onchain_available ? t('pay.onchainTime') : t('pay.onchainFrom', { amount: onchainFrom }), ok: !!sale?.onchain_available }, ...(cards ? [{ id: 'card', label: t('card.tab'), sub: t('card.tabSub'), ok: true }] : [])] as m (m.id)}
 				<button
 					type="button"
 					role="tab"
@@ -287,26 +297,30 @@
 					class={`flex h-[58px] items-center justify-center gap-2 rounded-md px-2 ${
 						rail === m.id ? 'bg-surface text-ink' : 'text-ink-soft'
 					} ${m.ok ? '' : 'opacity-60'}`}
-					onclick={() => pick(m.id as PaidRail)}
+					onclick={() => pick(m.id as Method)}
 				>
-					{#if m.id === 'lightning'}<Zap size={20} class="shrink-0" fill="currentColor" />{:else}<Bitcoin size={20} class="shrink-0" />{/if}
+					{#if m.id === 'lightning'}<Zap size={20} class={iconClass} fill="currentColor" />{:else if m.id === 'card'}<Nfc size={20} class={iconClass} />{:else}<Bitcoin size={20} class={iconClass} />{/if}
 					<span class="flex min-w-0 flex-col items-start leading-tight">
-						<span class="font-semibold">{railLabel(m.id as PaidRail)}</span>
-						<span class="text-[0.78rem] whitespace-nowrap text-ink-soft">{m.sub}</span>
+						<span class="font-semibold">{m.label}</span>
+						<span class="max-w-full truncate text-[0.78rem] text-ink-soft">{m.sub}</span>
 					</span>
 				</button>
 			{/each}
 		</div>
 
-		<QrCard value={qrValue} label={rail === 'onchain' ? t('pay.qrOnchain') : t('pay.qrLightning')}>
-			<div class="flex flex-col items-center gap-3.5 text-[0.9375rem] text-ink-soft">
-				<Spinner size={40} />
-				{rail === 'onchain' && sale ? t('pay.gettingAddress') : t('pay.creating')}
-			</div>
-		</QrCard>
+		{#if rail === 'card' && sale}
+			<CardTap saleId={sale.id} />
+		{:else}
+			<QrCard value={qrValue} label={rail === 'onchain' ? t('pay.qrOnchain') : t('pay.qrLightning')}>
+				<div class="flex flex-col items-center gap-3.5 text-[0.9375rem] text-ink-soft">
+					<Spinner size={40} />
+					{rail === 'onchain' && sale ? t('pay.gettingAddress') : t('pay.creating')}
+				</div>
+			</QrCard>
+		{/if}
 
 		<div class="flex flex-col items-center gap-1.5 text-center">
-			<p class="font-medium">{sale ? (rail === 'onchain' ? t('pay.scanOnchain') : t('pay.scanLightning')) : '\u00a0'}</p>
+			<p class="font-medium">{sale ? (rail === 'onchain' ? t('pay.scanOnchain') : rail === 'card' ? t('card.prompt') : t('pay.scanLightning')) : '\u00a0'}</p>
 			<p role="status" class={`flex items-center gap-2 text-[0.9375rem] ${offline ? 'text-warn' : 'text-ink-soft'}`}>
 				<span class="pulse h-[9px] w-[9px] shrink-0 rounded-full bg-current"></span>
 				{!sale ? t('pay.gettingReady') : offline ? t('pay.reconnecting') : t('pay.waiting')}

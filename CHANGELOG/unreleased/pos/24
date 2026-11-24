@@ -10,6 +10,9 @@
   [#24](https://github.com/SatoshiPortal/scuttle/pull/24)
   - Brands are configuration: one posd serves several, each on its own
     domain, with its own look from a directory of CSS, marks and icons.
+  - On Chrome for Android, terminals take Bolt Cards: posd follows the
+    card's LNURL-withdraw link and has the card's service pay the sale's
+    Lightning invoice.
   - The bitcoin price comes from the Bull Bitcoin API, any JSON price API,
     or a fixed price on test networks.
   - The HTTP API is described by a generated OpenAPI document,

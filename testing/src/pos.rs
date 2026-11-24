@@ -150,6 +150,8 @@ impl Posd {
 				poll_interval_ms: 200,
 				..Default::default()
 			},
+			// Test card services run on localhost.
+			bolt_card: config::BoltCard { allow_private_hosts: true },
 		};
 		change(&mut cfg);
 		let listen = cfg.http.listen;

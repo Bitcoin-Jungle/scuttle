@@ -46,6 +46,8 @@ Errors return a non-2xx status with `{"error": "<message>"}`:
 | Lightning | `lightning` | Any Lightning wallet, including an Ark wallet on the same Ark server | barkd delivered the claim to the owner's mailbox |
 | On-chain | `onchain` | Any bitcoin wallet | 1 confirmation |
 
+A Bolt Card pays the Lightning invoice: see Bolt Cards under Terminal.
+
 The terminal shows one rail's QR code at a time, which stays sparse enough
 for any phone to scan. posd gives no combined BIP 321 URI: wallets that only
 know BIP 21 mishandle one.
@@ -168,6 +170,7 @@ A terminal sends `Authorization: Bearer <device token>`.
 | `GET /api/v1/sales/<id>` | | `Sale` |
 | `GET /api/v1/sales/<id>?wait=<state>&onchain_sat=<n>` | | `Sale`, returned when the state is not `<state>`, when `onchain_received_sat + onchain_pending_sat` is not `<n>`, or after 25 s; `onchain_sat` is optional |
 | `POST /api/v1/sales/<id>/onchain` | | `Sale` with its on-chain address, the same one on a repeat; `409` when the sale is not `open`, is a Lightning address payment, is below the store's `onchain_min_sat`, or the store has no unused address |
+| `POST /api/v1/sales/<id>/bolt-card` | `{"link": "lnurlw://…"}` | `Sale`, still `open`: the card's service took the invoice; see Bolt Cards below |
 | `POST /api/v1/sales/<id>/cancel` | | `Sale`; `409` unless the sale is `open`, or when a payment for it, or part of one, arrived |
 | `GET /api/v1/sales?before=<id>&limit=<n>` | | `{"sales": [Sale]}`, newest first, at most 100 |
 | `GET /api/v1/sales.csv?from=<date>&to=<date>` | | CSV, one row per sale |
@@ -198,6 +201,30 @@ The same key with a different body is `409`.
 The terminal follows a sale by repeating the `?wait=` request with the last
 state and on-chain sum it saw. After any drop, the next request returns the
 current sale at once, so no change, a partial payment included, is missed.
+
+### Bolt Cards
+
+A Bolt Card is an NFC card that holds an LNURL-withdraw link (LUD-03),
+new on every tap. The terminal reads it with Web NFC, which only Chrome on
+Android has, and sends the link as `link`; an `LNURL1…` in bech32 works
+too. posd fetches the withdraw request, checks the sale's amount against
+the card's limits, and calls the card's callback with the sale's
+`lightning_invoice`. The card's service then pays it, and the sale is paid
+like any other Lightning payment, with `paid_rail` `lightning`.
+
+posd, not the terminal, talks to the card's service. A browser could reach
+only services that allow it with CORS, and posd decides which invoice is
+paid. As the link comes from the terminal, posd fetches only https URLs on
+public addresses, checked again after DNS, and follows no redirects.
+`[bolt_card] allow_private_hosts` lifts that on test networks.
+
+| Status | Meaning |
+|---|---|
+| `200` | The card's service took the invoice; the payment arrives a moment later |
+| `400` | `link` is not a withdraw link, or not one posd may fetch |
+| `409` | The sale is not `open`, or expired |
+| `422` | The card refused: `error` is the service's reason, or the card's limits when the amount is outside them |
+| `502` | The card's service could not be reached or did not answer JSON |
 
 `from` and `to` are dates (`2026-11-20`, in UTC) or RFC 3339 times. A date as
 `to` includes that whole day.

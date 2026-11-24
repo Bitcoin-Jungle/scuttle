@@ -86,6 +86,7 @@ fn documented() -> OpenApiRouter<Arc<App>> {
 		.routes(routes!(terminal::get_sale))
 		.routes(routes!(terminal::cancel_sale))
 		.routes(routes!(terminal::add_onchain))
+		.routes(routes!(terminal::pay_with_card))
 		.routes(routes!(owner::register))
 		.routes(routes!(owner::challenge))
 		.routes(routes!(owner::login))

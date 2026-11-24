@@ -212,6 +212,16 @@ impl Sales {
 	pub fn poll_interval(&self) -> Duration { Duration::from_millis(self.poll_interval_ms) }
 }
 
+/// Bolt Card payments, where posd asks a card's service to pay a sale.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BoltCard {
+	/// Let a card's service be on a private or local address, and on plain
+	/// http. For test networks only: otherwise a terminal could point posd
+	/// at its own network.
+	#[serde(default)]
+	pub allow_private_hosts: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
 	pub network: Network,
@@ -228,6 +238,8 @@ pub struct Config {
 	pub price: Price,
 	#[serde(default)]
 	pub sales: Sales,
+	#[serde(default)]
+	pub bolt_card: BoltCard,
 	/// The brands this posd serves, by key. A store of another brand cannot
 	/// register.
 	pub brands: BTreeMap<BrandKey, Brand>,
@@ -372,6 +384,9 @@ impl Config {
 		if sales.default_onchain_min_sat > crate::money::MAX_SAT || sales.lnurl_max_sat > crate::money::MAX_SAT {
 			bail!("sales.default_onchain_min_sat and sales.lnurl_max_sat must be at most 21 million bitcoin");
 		}
+		if self.bolt_card.allow_private_hosts && self.network == Network::Bitcoin {
+			bail!("bolt_card.allow_private_hosts is for test networks only");
+		}
 		Ok(())
 	}
 
@@ -424,6 +439,7 @@ mod test {
 			esplora_url: Some("http://127.0.0.1:3002".into()),
 			price: Price::default(),
 			sales: Sales::default(),
+			bolt_card: BoltCard::default(),
 			brands,
 		}
 	}

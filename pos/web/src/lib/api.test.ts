@@ -71,6 +71,14 @@ describe('PosClient', () => {
 		expect(calls[0]!.init.method).toBe('POST')
 	})
 
+	it('hands a card link to posd', async () => {
+		const { fetch, calls } = fakeFetch([json({ id: 's1', state: 'open' })])
+		await new PosClient({ fetch, token: 'tok' }).payWithCard('s1', 'lnurlw://card.example.com/ln?p=1')
+		expect(calls[0]!.url).toBe('/api/v1/sales/s1/bolt-card')
+		expect(calls[0]!.init.method).toBe('POST')
+		expect(JSON.parse(calls[0]!.init.body as string)).toEqual({ link: 'lnurlw://card.example.com/ln?p=1' })
+	})
+
 	it('pages history with before and limit', async () => {
 		const { fetch, calls } = fakeFetch([json({ sales: [] }), json({ sales: [{ id: 'a' }] })])
 		const client = new PosClient({ fetch, token: 'tok' })
