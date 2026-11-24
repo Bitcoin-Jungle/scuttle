@@ -366,9 +366,12 @@ preflights, so a wallet running in a browser on another site can use them
 - `GET /.well-known/lnurlp/<name>` returns the pay request. `minSendable` is
   the store's `min_sale_sat` in msat and `maxSendable` is set in the posd
   config.
+  `commentAllowed` is 200 (LUD-12): a payer's comment becomes the sale's
+  memo, which the owner sees in the sales list and CSV. A longer one is
+  refused.
   `payment_methods` lists the LUD-22 methods besides Lightning: `ARK`, and
   `SP` when the owner registered a silent payment address.
-- `GET /api/v1/lnurlp/<name>/callback?amount=<msat>` creates a sale with no
+- `GET /api/v1/lnurlp/<name>/callback?amount=<msat>[&comment=<text>]` creates a sale with no
   device and returns `{"pr": "<forwarding invoice>", "routes": []}`. Asking
   for an invoice needs no credentials, so a store has at most 25 unpaid ones
   open at once, and a posd 500: past that the callback is `429` until some

@@ -142,6 +142,11 @@ pub struct PayRequest {
 	max_sendable: u64,
 	/// The LUD-06 metadata, a JSON array as a string.
 	metadata: String,
+	/// LUD-12: the longest comment the payer may send, in characters. It
+	/// becomes the sale's memo.
+	#[serde(rename = "commentAllowed")]
+	#[schema(example = 200)]
+	comment_allowed: usize,
 	/// LUD-22: the methods besides Lightning that the callback can return
 	/// an address for. `SP` only when the owner registered a silent payment
 	/// address.
@@ -176,6 +181,7 @@ pub async fn pay_request(
 		min_sendable: min.to_sat() * 1000,
 		max_sendable: app.cfg.sales.lnurl_max_sat * 1000,
 		metadata: metadata(&store, &brand, &name),
+		comment_allowed: sales::MAX_MEMO_CHARS,
 		payment_methods: payment_methods(&store),
 	}))
 }
@@ -189,6 +195,10 @@ pub struct CallbackQuery {
 	/// address; with none, or without the field, the answer is an invoice.
 	#[param(example = "ARK,SP")]
 	payment_method: Option<String>,
+	/// LUD-12: the payer's comment, at most `commentAllowed` characters. It
+	/// becomes the sale's memo, which the owner sees with the sale.
+	#[param(example = "Thanks for the coffee")]
+	comment: Option<String>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -251,8 +261,14 @@ pub async fn callback(
 		let reply = BTreeMap::from([(method.to_string(), MethodAddress { address: address.to_string() })]);
 		return Ok(Json(CallbackReply::Method(reply)));
 	}
+	let comment = q.comment.as_deref().map(str::trim).filter(|c| !c.is_empty()).map(str::to_owned);
+	if comment.as_ref().is_some_and(|c| c.chars().count() > sales::MAX_MEMO_CHARS) {
+		return Err(bad_request(format!(
+			"the comment is longer than {} characters", sales::MAX_MEMO_CHARS,
+		)).into());
+	}
 	let _slot = app.lnurl_pending.reserve(&app, store.id).await?;
 	let amount = SaleAmount::Sat(Amount::from_sat(q.amount / 1000));
-	let sale = sales::create_sale(&app, &store, None, amount, None, None, None).await?;
+	let sale = sales::create_sale(&app, &store, None, amount, None, comment, None).await?;
 	Ok(Json(CallbackReply::Invoice(CallbackResponse { pr: sale.lightning_invoice, routes: vec![] })))
 }

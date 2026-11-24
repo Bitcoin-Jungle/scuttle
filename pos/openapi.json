@@ -236,6 +236,19 @@
               ]
             },
             "example": "ARK,SP"
+          },
+          {
+            "name": "comment",
+            "in": "query",
+            "description": "LUD-12: the payer's comment, at most `commentAllowed` characters. It\nbecomes the sale's memo, which the owner sees with the sale.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "example": "Thanks for the coffee"
           }
         ],
         "responses": {
@@ -1791,11 +1804,18 @@
           "minSendable",
           "maxSendable",
           "metadata",
+          "commentAllowed",
           "payment_methods"
         ],
         "properties": {
           "callback": {
             "type": "string"
+          },
+          "commentAllowed": {
+            "type": "integer",
+            "description": "LUD-12: the longest comment the payer may send, in characters. It\nbecomes the sale's memo.",
+            "example": 200,
+            "minimum": 0
           },
           "maxSendable": {
             "type": "integer",
