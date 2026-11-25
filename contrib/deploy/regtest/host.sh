@@ -5,7 +5,8 @@
 # Payjoin mailrooms, crash-cache and the dummy exchange. Then publishes it:
 # HTTP through the Cloudflare Tunnel (cloudflare.sh set it up), Electrum
 # through Tailscale Funnel with TLS, since a Cloudflare Tunnel carries no raw
-# TCP. Lightning peers and Bitcoin P2P go to the tailnet with Tailscale Serve.
+# TCP. Lightning peers and Bitcoin P2P go to the tailnet with Tailscale Serve
+# and to a Tor onion service.
 # RPCs and the stack's public development credentials stay on loopback.
 #
 #   STACK_REV=<commit of Bitcoin-Jungle/bullbitcoin-mobile scuttle-regtest> \
@@ -237,17 +238,23 @@ EOF
 sudo cloudflared tunnel --config /etc/cloudflared/config.yml ingress validate >/dev/null
 sudo systemctl restart scuttle-cloudflared
 
-log "Tor onion service: RecoverBull"
+log "Tor onion services: RecoverBull, Lightning peers and Bitcoin P2P"
 # The app reaches RecoverBull over Tor, as in production.
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -yq tor >/dev/null
+# A second onion carries the Lightning peers and bitcoind's P2P port for
+# outside nodes that won't join the tailnet; Lightning and Bitcoin Core both
+# speak to onion peers natively.
 printf '%s\n' "HiddenServiceDir /var/lib/tor/recoverbull/" \
 	"HiddenServicePort 80 127.0.0.1:8098" "HiddenServicePort 3000 127.0.0.1:8098" \
+	"HiddenServiceDir /var/lib/tor/peers/" \
+	"HiddenServicePort 18444 127.0.0.1:18444" "HiddenServicePort 19735 127.0.0.1:19735" \
+	"HiddenServicePort 29735 127.0.0.1:29735" "HiddenServicePort 39735 127.0.0.1:39735" \
 	| sudo tee /etc/tor/torrc.d-recoverbull >/dev/null
 grep -q '^%include /etc/tor/torrc.d-recoverbull' /etc/tor/torrc \
 	|| echo '%include /etc/tor/torrc.d-recoverbull' | sudo tee -a /etc/tor/torrc >/dev/null
 sudo systemctl enable tor >/dev/null 2>&1 || true
 sudo systemctl restart tor
-for _ in $(seq 1 30); do sudo test -s /var/lib/tor/recoverbull/hostname && break; sleep 1; done
+for _ in $(seq 1 30); do sudo test -s /var/lib/tor/recoverbull/hostname && sudo test -s /var/lib/tor/peers/hostname && break; sleep 1; done
 
 log "Tailscale Funnel: Electrum with TLS"
 sudo tailscale funnel --bg --tls-terminated-tcp=443 tcp://127.0.0.1:50000 >/dev/null
@@ -271,10 +278,11 @@ echo "Ark        https://$NAME-ark.$DOMAIN"
 echo "Esplora    https://$NAME-esplora.$DOMAIN  (Liquid: https://$NAME-liquid.$DOMAIN)"
 echo "Electrum   ssl://$host:443  (Liquid: ssl://$host:8443)"
 echo "Boltz      https://$NAME-boltz.$DOMAIN   crash-cache https://$NAME-crash.$DOMAIN"
-echo "Bitcoin P2P $host:18444  (tailnet)"
+onion=$(sudo cat /var/lib/tor/peers/hostname)
+echo "Bitcoin P2P $host:18444 (tailnet)  $onion:18444 (Tor)"
 for node in cln:19735 cln-peer:29735 boltz-cln:39735; do
 	id=$(podman exec "bull-regtest-${node%:*}" lightning-cli --regtest getinfo | jq -r .id)
-	echo "Lightning  ${node%:*}  $id@$host:${node#*:}  (tailnet)"
+	echo "Lightning  ${node%:*}  $id@$host:${node#*:} (tailnet)  $id@$onion:${node#*:} (Tor)"
 done
 echo "RecoverBull http://$(sudo cat /var/lib/tor/recoverbull/hostname) (Tor)"
 echo "crash-cache DSN (local): $(cat "${BULL_REGTEST_STATE:-$HOME/.local/share/bull-regtest}/crash-cache-dsn" 2>/dev/null)"
