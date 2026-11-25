@@ -3,7 +3,8 @@
 # one BULL's developers run locally: Bitcoin and Liquid (Nigiri), Electrum for
 # both, scuttle (captaind, watchmand, barkd, posd), Boltz, RecoverBull,
 # Payjoin mailrooms, crash-cache and the dummy exchange. Then publishes it:
-# HTTP through the Cloudflare Tunnel (cloudflare.sh set it up), Electrum
+# HTTP through the Cloudflare Tunnel (cloudflare.sh set it up), posd and
+# captaind behind the edge (contrib/deploy/edge: WAF, rate limits), Electrum
 # through Tailscale Funnel with TLS, since a Cloudflare Tunnel carries no raw
 # TCP. Lightning peers and Bitcoin P2P go to the tailnet with Tailscale Serve
 # and to a Tor onion service.
@@ -177,6 +178,41 @@ sudo systemctl enable bull-regtest-stack.service scuttle-devtools.service scuttl
 sudo systemctl restart scuttle-devtools.service
 sudo systemctl start scuttle-miner.timer scuttle-liquid-miner.timer
 
+log "edge: nginx with WAF and rate limits in front of captaind and posd"
+# The same edge production runs (contrib/deploy/edge): the OWASP Core Rule Set
+# on posd, an allowlist of captaind's public gRPC services, per-client and
+# per-method rate limits, JSON access logs. Here behind cloudflared, which
+# checks the edge's certificate against a CA of this deployment.
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -yq nginx libnginx-mod-http-modsecurity \
+	modsecurity-crs libnginx-mod-http-headers-more-filter >/dev/null
+EDGE="$HERE/../edge"
+TLS=/etc/scuttle/tls
+sudo install -d -m 755 "$TLS"
+if ! sudo test -f "$TLS/edge-ca.key"; then
+	sudo openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 3650 \
+		-subj "/CN=$NAME edge CA" -keyout "$TLS/edge-ca.key" -out "$TLS/edge-ca.crt" 2>/dev/null
+	sudo chmod 600 "$TLS/edge-ca.key"
+fi
+# The edge's certificate names exactly the hosts it serves; reissued each run.
+san=$(python3 "$EDGE/render.py" --hosts "$EDGE/regtest.toml" name="$NAME" domain="$DOMAIN" | sed 's/^/DNS:/' | paste -sd,)
+sudo openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj "/CN=$NAME edge" \
+	-keyout "$TLS/edge.key" -out "$TLS/edge.csr" 2>/dev/null
+printf 'subjectAltName=%s\nextendedKeyUsage=serverAuth\n' "$san" | sudo tee "$TLS/edge.ext" >/dev/null
+sudo openssl x509 -req -in "$TLS/edge.csr" -CA "$TLS/edge-ca.crt" -CAkey "$TLS/edge-ca.key" -CAcreateserial \
+	-days 825 -extfile "$TLS/edge.ext" -out "$TLS/edge.crt" 2>/dev/null
+sudo chmod 600 "$TLS/edge.key"
+sudo rm -f "$TLS/edge.csr" "$TLS/edge.ext"
+sudo install -d -m 755 /etc/nginx/scuttle-edge/modsec
+sudo install -m 644 "$EDGE/proxy.conf" /etc/nginx/scuttle-edge/proxy.conf
+sudo install -m 644 "$EDGE"/modsec/*.conf /etc/nginx/scuttle-edge/modsec/
+python3 "$EDGE/render.py" "$EDGE/regtest.toml" name="$NAME" domain="$DOMAIN" \
+	| sudo tee /etc/nginx/sites-available/scuttle-edge >/dev/null
+sudo ln -sf /etc/nginx/sites-available/scuttle-edge /etc/nginx/sites-enabled/scuttle-edge
+# captaind's old origin (cloudflare.sh's gRPC proxy) is replaced by the edge.
+sudo rm -f /etc/nginx/sites-enabled/scuttle-grpc-origin
+sudo nginx -t -q
+sudo systemctl reload nginx
+
 log "Cloudflare Tunnel"
 tunnel=$(sudo awk '/^tunnel:/ {print $2}' /etc/cloudflared/config.yml)
 sudo tee /etc/cloudflared/config.yml >/dev/null <<EOF
@@ -186,15 +222,23 @@ ingress:
   - hostname: $NAME.$DOMAIN
     path: ^/dev(/.*)?$
     service: http://127.0.0.1:3090
+  # posd and captaind go through the edge, over TLS checked against our CA.
   - hostname: $NAME.$DOMAIN
-    service: http://127.0.0.1:3080
-  - hostname: $NAME-bull.$DOMAIN
-    service: http://127.0.0.1:3080
-  - hostname: $NAME-ark.$DOMAIN
-    service: https://127.0.0.1:8445
+    service: https://127.0.0.1:9443
     originRequest:
+      originServerName: $NAME.$DOMAIN
+      caPool: $TLS/edge-ca.crt
+  - hostname: $NAME-bull.$DOMAIN
+    service: https://127.0.0.1:9443
+    originRequest:
+      originServerName: $NAME-bull.$DOMAIN
+      caPool: $TLS/edge-ca.crt
+  - hostname: $NAME-ark.$DOMAIN
+    service: https://127.0.0.1:9443
+    originRequest:
+      originServerName: $NAME-ark.$DOMAIN
+      caPool: $TLS/edge-ca.crt
       http2Origin: true
-      noTLSVerify: true
   - hostname: $NAME-esplora.$DOMAIN
     service: http://127.0.0.1:30000
   - hostname: $NAME-liquid.$DOMAIN
