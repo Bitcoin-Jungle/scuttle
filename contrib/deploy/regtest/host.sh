@@ -5,7 +5,8 @@
 # Payjoin mailrooms, crash-cache and the dummy exchange. Then publishes it:
 # HTTP through the Cloudflare Tunnel (cloudflare.sh set it up), Electrum
 # through Tailscale Funnel with TLS, since a Cloudflare Tunnel carries no raw
-# TCP. RPCs and the stack's public development credentials stay on loopback.
+# TCP. Lightning peers and Bitcoin P2P go to the tailnet with Tailscale Serve.
+# RPCs and the stack's public development credentials stay on loopback.
 #
 #   STACK_REV=<commit of Bitcoin-Jungle/bullbitcoin-mobile scuttle-regtest> \
 #     ./contrib/deploy/regtest/host.sh
@@ -252,6 +253,15 @@ log "Tailscale Funnel: Electrum with TLS"
 sudo tailscale funnel --bg --tls-terminated-tcp=443 tcp://127.0.0.1:50000 >/dev/null
 sudo tailscale funnel --bg --tls-terminated-tcp=8443 tcp://127.0.0.1:50001 >/dev/null
 
+# Lightning peers and bitcoind's P2P port, for people with their own regtest
+# node to sync this chain and open channels: tailnet only (share this machine
+# with them in the Tailscale admin console), since Funnel carries only TLS and
+# a Cloudflare Tunnel no raw TCP. Peer ports, not RPCs.
+log "Tailscale Serve: Lightning peers and Bitcoin P2P, tailnet only"
+for port in 18444 19735 29735 39735; do
+	sudo tailscale serve --bg --tcp="$port" "tcp://127.0.0.1:$port" >/dev/null
+done
+
 host=$(tailscale status --self --json | jq -r '.Self.DNSName | rtrimstr(".")')
 echo
 echo "Route any new names from a machine with a cloudflared login for $DOMAIN:"
@@ -261,5 +271,10 @@ echo "Ark        https://$NAME-ark.$DOMAIN"
 echo "Esplora    https://$NAME-esplora.$DOMAIN  (Liquid: https://$NAME-liquid.$DOMAIN)"
 echo "Electrum   ssl://$host:443  (Liquid: ssl://$host:8443)"
 echo "Boltz      https://$NAME-boltz.$DOMAIN   crash-cache https://$NAME-crash.$DOMAIN"
+echo "Bitcoin P2P $host:18444  (tailnet)"
+for node in cln:19735 cln-peer:29735 boltz-cln:39735; do
+	id=$(podman exec "bull-regtest-${node%:*}" lightning-cli --regtest getinfo | jq -r .id)
+	echo "Lightning  ${node%:*}  $id@$host:${node#*:}  (tailnet)"
+done
 echo "RecoverBull http://$(sudo cat /var/lib/tor/recoverbull/hostname) (Tor)"
 echo "crash-cache DSN (local): $(cat "${BULL_REGTEST_STATE:-$HOME/.local/share/bull-regtest}/crash-cache-dsn" 2>/dev/null)"
