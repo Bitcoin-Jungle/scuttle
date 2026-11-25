@@ -1,0 +1,196 @@
+# Private signet deployment
+
+One Debian 13 VM runs a private custom signet and the whole scuttle stack,
+for testing the point of sale and wallets end to end. The test deployment is
+`scuttle-signet.tailc408a.ts.net`. To try it without access to the VM, use
+`wallets.sh` (see "Trying it" below).
+
+| Service | Unit | Address |
+|---|---|---|
+| bitcoind 32.1, custom signet | `scuttle-bitcoind` | RPC 127.0.0.1:38332, no peers |
+| Block miner, every 10 minutes | `scuttle-miner.timer` | |
+| Postgres 17 (`captaind`, `posd`) | `postgresql` | 127.0.0.1:5432 |
+| CLN with the hold plugin (the Ark server's node) | `scuttle-cln-internal` | p2p 9735, gRPC 9736, hold 9737 |
+| CLN without plugins (an outside payer) | `scuttle-cln-external` | p2p 9745, gRPC 9746 |
+| captaind (expiry payouts, free intra-Ark Lightning) | `scuttle-captaind` | gRPC 0.0.0.0:3535 |
+| watchmand | `scuttle-watchmand` | |
+| Forwarder barkd | `scuttle-barkd` | 127.0.0.1:3000 |
+| posd and the terminal PWA | `scuttle-posd` | 127.0.0.1:3080 |
+| electrs (Esplora API) | `scuttle-electrs` | 127.0.0.1:3002 |
+
+## The chain
+
+- **The signet challenge is `OP_TRUE` (`51`).** Any block with valid proof of
+  work is valid. bitcoind does not listen for peers, so only this VM mines.
+- **Blocks come every 10 minutes.** Signet retargets every 2,016 blocks like
+  mainnet. Faster blocks would raise the difficulty fourfold every period,
+  until a CPU can no longer keep up. At 10 minutes the difficulty stays at
+  signet's minimum, and a block takes about a second to mine.
+- **Block heights match mainnet.** The Ark settings are in blocks, so the
+  production values behave as they would on mainnet. A VTXO lives 4,320
+  blocks, which is 30 days.
+- **Every block carries a few fee-paying transactions.** Without them,
+  bitcoind has no fee history, `estimatesmartfee` returns nothing, and CLN
+  refuses to open channels. Both CLN nodes also set `force-feerates=2000`.
+- **Mine extra blocks** with `sudo -u scuttle /opt/scuttle/bin/signet-mine N`.
+  Many quick blocks raise the difficulty at the next retarget, so mine sparingly.
+
+## Regtest
+
+The same scripts set up a regtest deployment with `NETWORK=regtest`, given to
+`setup.sh` once. It records the network in `/etc/scuttle/deploy.env`, which
+the other scripts read, and refuses to switch an existing deployment to the
+other network. The test deployment is `scuttle-regtest` (VM 111 on bigboy).
+
+- **Regtest never retargets.** The miner timer makes a block every minute
+  (`BLOCK_INTERVAL_SECS`), and any number can be mined on demand, so a test
+  can reach a VTXO's expiry (4,320 blocks) or an exit's timelocks right away.
+- **Mine with `sudo -u scuttle /opt/scuttle/bin/mine N`**, and run
+  bitcoin-cli as `sudo -u scuttle /opt/scuttle/bin/chain-cli`. On signet
+  these work too, and `signet-mine` is the old name for `mine`.
+- **The Ark settings are the same as on signet.** Only the chain differs.
+- **Bitcoind RPC is on port 18443**, and wallets use `--regtest`.
+  `wallets.sh` takes `NETWORK=regtest`, and `/dev/mine` allows up to 10,000
+  blocks on regtest.
+- **Liquid, optionally.** `liquid.sh` adds a standalone Liquid regtest chain
+  (elementsd and its Esplora/Electrum index, Nigiri's images and chain
+  parameters, so L-BTC is BULL's policy asset `5ac9f65c…b225`). No peg-ins
+  and no Boltz. A block a minute; `liquid-cli` and `liquid-mine` are in
+  `/opt/scuttle/bin`, and the faucet's `POST /liquid` sends L-BTC.
+- **Electrum.** Cloudflare Tunnel carries no raw TCP, so the Electrum ports go
+  out through Tailscale Funnel with TLS: on `scuttle-regtest`, bitcoin at
+  `ssl://scuttle-regtest.tailc408a.ts.net:443` and Liquid at `:8443`.
+
+## Build, set up, fund, check
+
+On the VM, from a checkout of the branch to deploy. Besides the repository's
+build tools, `setup.sh` needs Postgres, Docker for CLN, bitcoind 32.1 at
+`/usr/local/bin/bitcoind`, and Blockstream's electrs, built from
+[its repository](https://github.com/Blockstream/electrs) with
+`cargo build --release` at `~/electrs` (or `ELECTRS_BIN=<path>`).
+
+```sh
+cd pos/web && npm ci && npm run build && cd ../..   # the PWA posd embeds
+CARGO_PROFILE_RELEASE_LTO=thin cargo build -j 3 --release -p bark-server -p bark-cli -p bark-pos
+./contrib/deploy/signet/setup.sh    # installs binaries, configs and units; safe to rerun
+./contrib/deploy/signet/fund.sh     # funds captaind and opens a 2 BTC channel; safe to rerun
+./contrib/deploy/signet/smoke.sh    # a Lightning sale and an Ark sale, end to end
+./contrib/deploy/signet/public.sh   # Tailscale Funnel: posd, Ark server, Esplora
+```
+
+Use `-j 3` and thin LTO. With 16 GB of RAM, a full-LTO release build with
+8 jobs runs out of memory.
+
+To update a deployment, rebuild and run `setup.sh` again, then restart the
+units it changed (`sudo systemctl restart scuttle-captaind scuttle-posd …`).
+
+Until posd's first release its one migration can still change. When it
+does, posd refuses to start on the old database: stop posd, drop its
+database (`sudo -u postgres dropdb posd`) and run `setup.sh` again. Store
+owners then register again.
+
+## Boarding and the VTXO pool
+
+Boards need 5,000 sats or more. The server waits for 3 confirmations of a
+board on regtest (3 minutes) and 1 on signet (10 minutes). Rounds run every
+10 seconds, not the 10 minutes proposed for mainnet, so tests don't wait.
+The VTXO pool, which pays Lightning and same-server recipients, holds 40
+VTXOs each of 10,000, 50,000 and 100,000 sats and 20 of 300,000 sats. Pool
+VTXOs live 1,008 blocks and leave the pool with 432 left, so a recipient,
+such as a merchant, always gets 432 to 1,008 blocks: 3 to 7 days on
+signet and mainnet, about 7 to 17 hours on regtest. That is the window to
+open the wallet and refresh (or schedule a delegated refresh) before the
+VTXOs expire into a payout. Below 1,009 blocks left they also stay in the
+free Lightning send tier.
+
+## Fees
+
+The test deployments use the fee schedule proposed for mainnet. There are
+no flat or minimum fees. Boarding and Lightning receives from outside cost
+0.20%. Offboards, Lightning sends and refreshes cost a share that grows
+with the blocks the spent VTXOs have left:
+
+| Blocks left | Lightning send out, or offboard | Same-server Lightning send | Refresh |
+|---:|---:|---:|---:|
+| 1–288 | 0% | 0% | 0.10% |
+| 289–1,008 | 0% | 0% | 0.20% |
+| 1,009–1,439 | 0.20% | 0.10% | 0.30% |
+| 1,440–2,159 | 0.35% | 0.175% | 0.45% |
+| 2,160–2,879 | 0.50% | 0.25% | 1.00% |
+| 2,880–3,599 | 0.50% | 0.25% | 1.50% |
+| 3,600+ | 0.50% | 0.25% | 2.00% |
+
+A Lightning payment between two wallets of this server, such as a
+customer paying a store, charges the sender half the outside rate and the
+receiver nothing (`[fees.intra_ark]`). Arkoor sends and receives are free.
+Offboards also pay their mining fee. A wallet's fee estimate and its
+movements show which kind a payment was.
+
+## Secrets and data
+
+- **`/etc/scuttle/secrets.env`** holds the generated bitcoind and Postgres
+  passwords. It is created once and readable only by root and the `scuttle`
+  group.
+- **Configs** are in `/etc/scuttle/`. Data is in `/var/lib/scuttle/<service>`,
+  owned by the `scuttle` user.
+- **Seeds:** the captaind seed is `/var/lib/scuttle/captaind/mnemonic`, and
+  watchmand has a copy of it.
+- **Smoke test wallets** are in `~/smoke` of the user that ran it.
+
+## Reaching it
+
+The VM is on the tailnet as `scuttle-signet.tailc408a.ts.net`. `public.sh`
+publishes three services on the internet with Tailscale Funnel:
+
+| URL | Service |
+|---|---|
+| https://scuttle-signet.tailc408a.ts.net | posd: terminal PWA, API, Lightning address |
+| https://scuttle-signet.tailc408a.ts.net:8443 | the Ark server (captaind gRPC) for wallets |
+| https://scuttle-signet.tailc408a.ts.net:10000 | Esplora (electrs) |
+
+A wallet uses `--signet --ark https://…:8443 --esplora https://…:10000`.
+
+- **Ports:** Funnel allows only 443, 8443 and 10000.
+- **gRPC on 8443:** gRPC needs HTTP/2 negotiated in TLS (ALPN). Funnel's TLS
+  termination does not negotiate it and cannot proxy HTTP/2 to a backend.
+  So 8443 is raw TCP to nginx on 127.0.0.1:8444, which serves the node's
+  Tailscale certificate and passes gRPC to captaind. A weekly timer
+  (`scuttle-renew-cert`) renews the certificate.
+- **electrs** imports blocks over RPC (`--jsonrpc-import`). It cannot read
+  bitcoind's block files, because a custom signet has its own network magic.
+- **Test helpers:** `/dev/` on the posd host, from `devtools.py`, gives
+  faucet coins, mines blocks and creates a store's on-chain wallet. Each
+  has a cap and a rate limit.
+
+### Cloudflare Tunnel instead
+
+`cloudflare.sh` publishes the same services through a Cloudflare Tunnel, on
+one-level names under a Cloudflare zone (`<name>`, `<name>-bull`,
+`<name>-ark`, `<name>-esplora`). The regtest deployment uses it under
+`vibecode.casa`. See the script's header for the steps. The zone's gRPC
+setting (Network → gRPC) must be on, or Cloudflare answers gRPC with 403.
+cloudflared runs with `--protocol http2`, because its default QUIC transport
+drops the trailers that carry gRPC's status.
+
+## Trying it
+
+`wallets.sh` runs on your own machine and needs only `bark` (built from this
+branch), `curl` and `jq`. It drives a store owner's wallet, a customer's
+wallet, the owner API and terminals. Run it with no arguments for the full
+command list.
+
+```sh
+cargo build -p bark-cli --bin bark
+alias sw=./contrib/deploy/signet/wallets.sh
+sw create owner; sw create customer
+sw faucet customer 0.05; sw board customer
+sw register "My Cafe" CRC bitcoinjungle      # or bullbitcoin
+sw pair                                # open on a phone, or: sw till-pair <link>
+sw sell 6250 "2 coffees"; sw pay customer; sw wait   # pays inside the Ark, free
+```
+
+## Known limits
+
+- **The Bull app as it ships cannot use this chain.** It runs upstream bark
+  from pub.dev. Its Esplora setting can point here once it runs scuttle.
+- **The Lightning Network is just these two CLN nodes.**

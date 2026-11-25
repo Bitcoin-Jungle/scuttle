@@ -83,3 +83,10 @@ poll_interval_ms = 2000
 # How long after a sale expires its payments are still checked: an on-chain
 # address for late payments, a Lightning payment barkd has not settled.
 watch_secs = 604800
+
+# Bolt Card payments: the terminal reads a card with NFC, and posd asks the
+# card's service to pay the sale's Lightning invoice.
+[bolt_card]
+# Let a card's service be on a private or local address, or plain http.
+# For test networks only.
+# allow_private_hosts = false

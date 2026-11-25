@@ -17,6 +17,7 @@ use crate::api::{Operator, StoreView};
 use crate::api::owner::{LIGHTNING_NAME_RULE, lightning_name_taken, valid_lightning_name};
 use crate::database::{STORE_COLUMNS, Store};
 use crate::error::{ApiResult, ErrorBody, bad_request, not_found};
+use crate::names;
 
 
 /// The most names one request reserves.
@@ -78,6 +79,9 @@ pub struct AssignLightningAddress {
 }
 
 /// Gives a store of the operator's brand a Lightning address, reserved or not.
+///
+/// A name another store gave up is held for it like any other, and the name
+/// the store had is held for it.
 #[utoipa::path(
 	post, path = "/admin/lightning-addresses", tag = "operator", security(("admin_token" = [])),
 	request_body = AssignLightningAddress,
@@ -86,7 +90,7 @@ pub struct AssignLightningAddress {
 		(status = 400, description = "The name or the Ark address is not valid", body = ErrorBody),
 		(status = 401, description = "The token is not a brand's admin_token", body = ErrorBody),
 		(status = 404, description = "No store of the brand has the address", body = ErrorBody),
-		(status = 409, description = "Another store has the name", body = ErrorBody),
+		(status = 409, description = "Another store has or holds the name", body = ErrorBody),
 	),
 )]
 pub async fn assign_lightning_address(
@@ -100,13 +104,22 @@ pub async fn assign_lightning_address(
 	// The address as posd stores it, whatever case the caller wrote it in.
 	let ark_address = ark::Address::from_str(&req.ark_address)
 		.map_err(|_| bad_request("not a valid Ark address"))?.to_string();
-	let conn = app.db.conn().await?;
-	let row = conn.query_opt(&format!("
-		UPDATE store s SET lightning_address_name = $3, updated_at = NOW()
-		WHERE s.ark_address = $1 AND s.brand = $2
-		RETURNING {}
-	", STORE_COLUMNS), &[&ark_address, &op.brand.as_str(), &req.name])
-		.await.map_err(lightning_name_taken)?
+	let mut conn = app.db.conn().await?;
+	let tx = conn.transaction().await?;
+	let current = tx.query_opt(&format!("
+		SELECT {} FROM store s WHERE s.ark_address = $1 AND s.brand = $2 FOR UPDATE
+	", STORE_COLUMNS), &[&ark_address, &op.brand.as_str()]).await?
+		.map(|r| Store::from_row(&r))
 		.ok_or_else(|| not_found("no store of this brand has that Ark address"))?;
-	Ok(Json(StoreView::new(&app, &Store::from_row(&row))))
+	let old = current.lightning_address_name.as_deref().map(|n| (&op.brand, n));
+	let new = Some((&op.brand, req.name.as_str()));
+	names::lock(&tx, &old.into_iter().chain(new).collect::<Vec<_>>()).await?;
+	names::change(&tx, current.id, old, new, true).await?;
+	let row = tx.query_one(&format!("
+		UPDATE store s SET lightning_address_name = $2, updated_at = NOW()
+		WHERE s.id = $1
+		RETURNING {}
+	", STORE_COLUMNS), &[&current.id, &req.name]).await.map_err(lightning_name_taken)?;
+	tx.commit().await?;
+	Ok(Json(StoreView::new(&app, &Store::from_row(&row)).await))
 }

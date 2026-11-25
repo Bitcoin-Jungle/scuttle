@@ -27,6 +27,9 @@ pub enum ApiError {
 	Conflict(String),
 	#[error("{0}")]
 	TooManyRequests(String),
+	/// A payer's service refused, with its reason.
+	#[error("{0}")]
+	Declined(String),
 	#[error("an upstream service failed")]
 	Upstream(anyhow::Error),
 	#[error("internal error")]
@@ -68,6 +71,7 @@ impl ApiError {
 			ApiError::NotFound(_) => StatusCode::NOT_FOUND,
 			ApiError::Conflict(_) => StatusCode::CONFLICT,
 			ApiError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
+			ApiError::Declined(_) => StatusCode::UNPROCESSABLE_ENTITY,
 			ApiError::Upstream(e) => {
 				tracing::warn!("upstream error: {:#}", e);
 				StatusCode::BAD_GATEWAY

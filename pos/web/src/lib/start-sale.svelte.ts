@@ -25,6 +25,16 @@ export async function startSale(body: NewSale): Promise<string | null> {
 		if (!(e instanceof ApiError)) return t('common.genericError')
 		if (e.status === 0) return t('keypad.unreachable')
 		if (e.status === 502) return t('keypad.unavailable')
+		// posd says why it refused, as for an amount under the minimum. The
+		// store's view may be out of date (a till left open across a posd
+		// upgrade or a fee change), so refresh it for the next try.
+		if (e.status === 400 && e.message) {
+			void client()
+				.terminal()
+				.then((terminal) => (session.terminal = terminal))
+				.catch(() => {})
+			return e.message.charAt(0).toUpperCase() + e.message.slice(1)
+		}
 		if (e.status === 409 && 'currency' in body) {
 			// The owner changed the store's currency: show the new one before
 			// charging anything in it.

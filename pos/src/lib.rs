@@ -7,10 +7,15 @@
 //! - Lightning: a forwarding invoice from a private barkd. A wallet on the
 //!   same Ark server pays it too: the server settles that payment without
 //!   Lightning, at its intra-Ark fees.
-//! - On-chain: an address from the owner's public descriptor.
+//! - On-chain: an address from the owner's public descriptor, made when the
+//!   cashier picks on-chain.
+//!
+//! A Bolt Card tapped on the terminal pays the Lightning invoice: posd asks
+//! the card's service to pay it (see [bolt_card]).
 
 pub mod api;
 pub mod ark_server;
+pub mod bolt_card;
 pub mod brand;
 pub mod config;
 pub mod database;
@@ -20,7 +25,9 @@ pub mod money;
 pub mod price;
 pub mod rails;
 pub mod registration;
+pub mod names;
 pub mod sales;
+pub mod silent_payment;
 pub mod token;
 pub mod watcher;
 
@@ -30,6 +37,7 @@ use anyhow::Context;
 use tokio::sync::watch;
 
 use crate::ark_server::ArkServer;
+use crate::bolt_card::BoltCards;
 use crate::config::Config;
 use crate::database::Db;
 use crate::login::LoginKey;
@@ -45,6 +53,7 @@ pub struct App {
 	pub forwarder: Forwarder,
 	pub ark: ArkServer,
 	pub chain: Chain,
+	pub bolt_cards: BoltCards,
 	/// Authenticates owner login challenges.
 	pub login_key: LoginKey,
 	/// Bumped whenever a sale changes state, to wake long-polls.
@@ -70,6 +79,7 @@ impl App {
 			login_key,
 			price: PriceFeed::new(cfg.price.clone())?,
 			forwarder: Forwarder::new(&cfg.barkd)?,
+			bolt_cards: BoltCards::new(cfg.bolt_card.allow_private_hosts)?,
 			chain: Chain::connect(&cfg).await.context("failed to set up the chain source")?,
 			sale_changes: watch::channel(0).0,
 			lnurl_pending: Default::default(),

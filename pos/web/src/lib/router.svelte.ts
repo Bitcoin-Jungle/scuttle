@@ -19,6 +19,10 @@ export const router = {
 	go(path: string): void {
 		location.hash = '#' + path
 	},
+	/** Go to path in place of the current history entry, so Back skips it. */
+	replace(path: string): void {
+		location.replace('#' + path)
+	},
 	/** Match "/pay/:id" style patterns; returns params or null. */
 	match(pattern: string): Record<string, string> | null {
 		const p = pattern.split('/')

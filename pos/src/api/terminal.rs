@@ -15,6 +15,7 @@ use utoipa::{IntoParams, ToSchema};
 
 use crate::App;
 use crate::api::{StoreView, Terminal};
+use crate::bolt_card::CardError;
 use crate::database::{Rail, STORE_COLUMNS, SaleState, Store};
 use crate::error::{ApiError, ApiResult, ErrorBody, bad_request, conflict, not_found};
 use crate::money::{Decimal, MAX_SAT};
@@ -85,7 +86,7 @@ pub async fn pair(
 	).await?;
 	tx.commit().await?;
 
-	Ok(Json(PairResponse { token: device_token, store: StoreView::new(&app, &store) }))
+	Ok(Json(PairResponse { token: device_token, store: StoreView::new(&app, &store).await }))
 }
 
 #[derive(Serialize, ToSchema)]
@@ -104,7 +105,7 @@ pub struct TerminalView {
 	),
 )]
 pub async fn terminal(State(app): State<Arc<App>>, t: Terminal) -> Json<TerminalView> {
-	Json(TerminalView { store: StoreView::new(&app, &t.store), device_name: t.device.name })
+	Json(TerminalView { store: StoreView::new(&app, &t.store).await, device_name: t.device.name })
 }
 
 #[derive(Serialize, ToSchema)]
@@ -209,9 +210,96 @@ pub async fn create_sale(
 		_ => return Err(bad_request("give exactly one of fiat_amount and amount_sat")),
 	};
 	let sale = sales::create_sale(
-		&app, &t.store, Some(t.device.id), amount, req.currency.as_deref(), req.memo, false,
+		&app, &t.store, Some(t.device.id), amount, req.currency.as_deref(), req.memo,
 		request.as_ref(),
 	).await?;
+	Ok(Json(sale.into()))
+}
+
+/// Gives a sale its on-chain address, when the cashier picks on-chain.
+///
+/// A sale gets one address, so repeating the request returns the same one.
+/// A payer who already paid part of the amount to it sees the full amount
+/// in `onchain_uri`; the terminal shows what arrived from
+/// `onchain_received_sat` and `onchain_pending_sat`.
+#[utoipa::path(
+	post, path = "/sales/{id}/onchain", tag = "terminal", security(("device_token" = [])),
+	params(("id" = String, Path, description = "The sale id")),
+	responses(
+		(status = 200, description = "The sale, with its on-chain address", body = SaleView),
+		(status = 401, description = "The token is missing, not valid, or revoked", body = ErrorBody),
+		(status = 404, description = "No such sale in this store", body = ErrorBody),
+		(status = 409, description = "The sale is not open, is below the store's on-chain \
+			minimum, or the store has no unused address", body = ErrorBody),
+		(status = 502, description = "The chain source failed", body = ErrorBody),
+	),
+)]
+pub async fn add_onchain(
+	State(app): State<Arc<App>>,
+	t: Terminal,
+	Path(id): Path<String>,
+) -> ApiResult<Json<SaleView>> {
+	Ok(Json(sales::add_onchain(&app, &t.store, &id).await?.into()))
+}
+
+/// The longest card link posd takes.
+const MAX_CARD_LINK_LEN: usize = 2048;
+
+#[derive(Deserialize, ToSchema)]
+pub struct CardPayment {
+	/// What the terminal read from the card's NFC tag: an `lnurlw://` link,
+	/// as Bolt Cards hold, or a bech32 LNURL. It changes on every tap.
+	#[schema(example = "lnurlw://card.example.com/ln?p=4E2F…&c=8A1B…")]
+	link: String,
+}
+
+/// Pays a sale with a Bolt Card the customer tapped on the terminal.
+///
+/// posd follows the card's LNURL-withdraw link (LUD-03) and has the card's
+/// service pay the sale's Lightning invoice. The answer only means the
+/// service took the invoice: the payment arrives a moment later, and the
+/// terminal sees the sale paid as with any other Lightning payment.
+/// A `422` carries the service's reason, as for a card with too low a
+/// balance, or the card's limits when the amount is outside them.
+#[utoipa::path(
+	post, path = "/sales/{id}/bolt-card", tag = "terminal", security(("device_token" = [])),
+	params(("id" = String, Path, description = "The sale id")),
+	request_body = CardPayment,
+	responses(
+		(status = 200, description = "The card's service is paying; the sale, still open", body = SaleView),
+		(status = 400, description = "The link is not an LNURL-withdraw link posd may follow", body = ErrorBody),
+		(status = 401, description = "The token is missing, not valid, or revoked", body = ErrorBody),
+		(status = 404, description = "No such sale in this store", body = ErrorBody),
+		(status = 409, description = "The sale is not open, or expired", body = ErrorBody),
+		(status = 422, description = "The card refused, with its reason", body = ErrorBody),
+		(status = 502, description = "The card's service could not be reached", body = ErrorBody),
+	),
+)]
+pub async fn pay_with_card(
+	State(app): State<Arc<App>>,
+	t: Terminal,
+	Path(id): Path<String>,
+	Json(req): Json<CardPayment>,
+) -> ApiResult<Json<SaleView>> {
+	if req.link.len() > MAX_CARD_LINK_LEN {
+		return Err(bad_request("the card's link is too long"));
+	}
+	let sale = {
+		let conn = app.db.conn().await?;
+		sales::get_sale(&*conn, t.store.id, &id).await?
+	};
+	if sale.state != SaleState::Open {
+		return Err(conflict(format!("the sale is {}", sale.state)));
+	}
+	if sale.expires_at <= Utc::now() {
+		return Err(conflict("the sale expired"));
+	}
+	app.bolt_cards.pay(&req.link, &sale.lightning_invoice, sale.amount_sat as u64).await
+		.map_err(|e| match e {
+			CardError::BadLink(m) => bad_request(m),
+			CardError::Declined(m) => ApiError::Declined(m),
+			CardError::Unreachable(e) => ApiError::Upstream(e),
+		})?;
 	Ok(Json(sale.into()))
 }
 
@@ -221,6 +309,11 @@ pub struct WaitQuery {
 	/// most 25 seconds. Repeat it with the last state seen to follow a sale.
 	#[param(value_type = Option<SaleState>)]
 	wait: Option<String>,
+	/// With `wait`, also return when `onchain_received_sat +
+	/// onchain_pending_sat` is no longer this, so a terminal sees a partial
+	/// payment arrive.
+	#[param(minimum = 0)]
+	onchain_sat: Option<i64>,
 }
 
 /// A sale of the terminal's store, at once or by long-poll.
@@ -251,8 +344,9 @@ pub async fn get_sale(
 			let conn = app.db.conn().await?;
 			sales::get_sale(&*conn, t.store.id, &id).await?
 		};
+		let onchain_sat = sale.onchain_received_sat + sale.onchain_pending_sat;
 		let done = match wait {
-			Some(state) => sale.state != state,
+			Some(state) => sale.state != state || q.onchain_sat.is_some_and(|n| n != onchain_sat),
 			None => true,
 		};
 		let now = tokio::time::Instant::now();
@@ -303,6 +397,13 @@ pub async fn cancel_sale(
 			let sale = sales::get_sale(&*app.db.conn().await?, t.store.id, &id).await?;
 			return Err(conflict(format!("the sale is {}", sale.state)));
 		}
+	}
+	// Part of the amount arrived on-chain: the customer paid something, so
+	// the cashier takes the rest, or lets the sale expire with the part
+	// recorded.
+	let sale = sales::get_sale(&*app.db.conn().await?, t.store.id, &id).await?;
+	if sale.onchain_received_sat + sale.onchain_pending_sat > 0 {
+		return Err(conflict("part of the amount was paid on-chain"));
 	}
 
 	for p in payments.iter().filter(|p| p.rail == Rail::Lightning) {

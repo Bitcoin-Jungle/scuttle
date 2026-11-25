@@ -31,17 +31,22 @@
 
 	let creating = $state(false)
 	let errorMsg = $state<string | null>(null)
-	let rate = $state<Rate | null>(null)
+	let fetchedRate = $state<Rate | null>(null)
 	let rateError = $state(false)
 	let memoDraft = $state<string | null>(null)
+	// A price in another currency is no price: after the owner changes the
+	// store's currency, the old one would be off by the exchange rate.
+	const rate = $derived(fetchedRate?.currency === currency ? fetchedRate : null)
 
+	// Reloads at once when the store's currency changes, and every minute.
 	$effect(() => {
+		void currency
 		let stopped = false
 		async function load() {
 			try {
 				const next = await client().rate()
 				if (!stopped) {
-					rate = next
+					fetchedRate = next
 					rateError = false
 				}
 			} catch {
@@ -77,12 +82,18 @@
 	const amountSize = $derived(
 		amountLabel.length > 11 ? 'text-amount-sm' : amountLabel.length > 9 ? 'text-amount-md' : 'text-amount',
 	)
+	// Older posd versions send no minimum: 1 sat, as before.
+	const minSale = $derived(store?.min_sale_sat ?? 1)
+	const belowMinimum = $derived(sats > 0 && sats < minSale)
 	const estimate = $derived.by(() => {
+		if (belowMinimum) return t('keypad.belowMinimum', { amount: formatSats(minSale) })
 		if (!draft.amount || !rate || sats === 0) return null
 		if (draft.unit === 'fiat') return t('keypad.approx', { amount: formatSats(sats) })
 		return t('keypad.approx', { amount: formatFiat((sats / 1e8) * Number(rate.btc_price), rate.currency) })
 	})
-	const canCharge = $derived(sats > 0 && (draft.unit === 'sat' || rate !== null) && !creating)
+	const canCharge = $derived(
+		sats > 0 && !belowMinimum && (draft.unit === 'sat' || rate !== null) && !creating,
+	)
 
 	function applyInput(key: string) {
 		draft.amount = applyAmountInput(draft.amount, key, precision)

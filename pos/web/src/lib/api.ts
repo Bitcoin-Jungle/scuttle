@@ -13,9 +13,17 @@ export interface Sale {
 	currency: string | null
 	btc_price: string | null
 	memo: string | null
-	payment_request: string
 	lightning_invoice: string
+	/** The sale can be paid on-chain; the address comes with addOnchain. */
+	onchain_available: boolean
+	/** Null until the cashier picks on-chain. */
 	onchain_address: string | null
+	/** The address and the full amount as a BIP 21 URI, null with the address. */
+	onchain_uri: string | null
+	/** Confirmed to the on-chain address so far. */
+	onchain_received_sat: number
+	/** In the mempool to the on-chain address. */
+	onchain_pending_sat: number
 	paid_at: string | null
 	paid_rail: PaidRail | null
 	received_sat: number
@@ -28,6 +36,9 @@ export interface Store {
 	/** The decimal places a sale in `currency` may have. */
 	currency_decimals: number
 	onchain_min_sat: number
+	/** The smallest sale in sats: below it the Ark server's Lightning
+	 * receive fee would take the whole amount. */
+	min_sale_sat: number
 	lightning_address: string | null
 	/** The key of the store's brand. */
 	brand: string
@@ -77,6 +88,7 @@ export interface ClientOptions {
 /** Long-poll requests wait up to 25 s on the server. */
 const WAIT_TIMEOUT_MS = 35_000
 const DEFAULT_TIMEOUT_MS = 15_000
+const CARD_TIMEOUT_MS = 30_000
 
 export class PosClient {
 	private readonly baseUrl: string
@@ -117,10 +129,29 @@ export class PosClient {
 		return this.json('GET', `/api/v1/sales/${encodeURIComponent(id)}`, undefined, { signal })
 	}
 
-	/** Returns when the sale is no longer in `state`, or after the server's wait limit. */
-	waitSale(id: string, state: SaleState, signal?: AbortSignal): Promise<Sale> {
-		const path = `/api/v1/sales/${encodeURIComponent(id)}?wait=${encodeURIComponent(state)}`
+	/**
+	 * Returns when the sale is no longer in `state`, or when the sats seen
+	 * on-chain are no longer `onchainSat`, or after the server's wait limit.
+	 */
+	waitSale(id: string, state: SaleState, onchainSat: number, signal?: AbortSignal): Promise<Sale> {
+		const q = new URLSearchParams({ wait: state, onchain_sat: String(onchainSat) })
+		const path = `/api/v1/sales/${encodeURIComponent(id)}?${q}`
 		return this.json('GET', path, undefined, { timeoutMs: WAIT_TIMEOUT_MS, signal })
+	}
+
+	/** Gives the sale its on-chain address, when the cashier picks on-chain. */
+	addOnchain(id: string): Promise<Sale> {
+		return this.json('POST', `/api/v1/sales/${encodeURIComponent(id)}/onchain`)
+	}
+
+	/**
+	 * Has a Bolt Card pay the sale: posd follows the link the terminal read
+	 * from the card. The sale is still open when this returns; the payment
+	 * arrives a moment later. A 422 carries the card's reason.
+	 */
+	payWithCard(id: string, link: string): Promise<Sale> {
+		// posd waits for the card's service, up to 10 s per request.
+		return this.json('POST', `/api/v1/sales/${encodeURIComponent(id)}/bolt-card`, { link }, { timeoutMs: CARD_TIMEOUT_MS })
 	}
 
 	cancelSale(id: string): Promise<Sale> {

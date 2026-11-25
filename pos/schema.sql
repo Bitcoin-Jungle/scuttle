@@ -73,6 +73,18 @@ ALTER SEQUENCE public.device_id_seq OWNED BY public.device.id;
 
 
 --
+-- Name: held_name; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.held_name (
+    brand text NOT NULL,
+    name text NOT NULL,
+    store_id bigint NOT NULL,
+    held_until timestamp with time zone NOT NULL
+);
+
+
+--
 -- Name: invite; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -263,6 +275,7 @@ CREATE TABLE public.store (
     ark_address text NOT NULL,
     onchain_descriptor text NOT NULL,
     next_onchain_index bigint DEFAULT 0 NOT NULL,
+    silent_payment_address text,
     currency text NOT NULL,
     brand text NOT NULL,
     onchain_min_sat bigint NOT NULL,
@@ -358,6 +371,14 @@ ALTER TABLE ONLY public.device
 
 ALTER TABLE ONLY public.device
     ADD CONSTRAINT device_token_hash_key UNIQUE (token_hash);
+
+
+--
+-- Name: held_name held_name_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.held_name
+    ADD CONSTRAINT held_name_pkey PRIMARY KEY (brand, name);
 
 
 --
@@ -510,10 +531,24 @@ CREATE UNIQUE INDEX sale_payment_onchain_address_idx ON public.sale_payment USIN
 
 
 --
+-- Name: sale_payment_onchain_unsettled_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX sale_payment_onchain_unsettled_idx ON public.sale_payment USING btree (sale_id) WHERE ((rail = 'onchain'::public.payment_rail) AND (settled_at IS NULL));
+
+
+--
 -- Name: sale_request_key_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE UNIQUE INDEX sale_request_key_idx ON public.sale USING btree (device_id, request_key) WHERE (request_key IS NOT NULL);
+
+
+--
+-- Name: sale_store_created_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX sale_store_created_idx ON public.sale USING btree (store_id, created_at);
 
 
 --
@@ -536,6 +571,14 @@ CREATE INDEX sale_watch_idx ON public.sale USING btree (state, expires_at);
 
 ALTER TABLE ONLY public.device
     ADD CONSTRAINT device_store_id_fkey FOREIGN KEY (store_id) REFERENCES public.store(id);
+
+
+--
+-- Name: held_name held_name_store_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.held_name
+    ADD CONSTRAINT held_name_store_id_fkey FOREIGN KEY (store_id) REFERENCES public.store(id);
 
 
 --

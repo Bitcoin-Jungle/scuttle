@@ -14,9 +14,14 @@ mod web;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::FromRequestParts;
-use axum::http::header::AUTHORIZATION;
+use axum::extract::{FromRequestParts, Request};
+use axum::http::header::{
+	ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS, ACCESS_CONTROL_ALLOW_ORIGIN, AUTHORIZATION,
+};
 use axum::http::request::Parts;
+use axum::http::{HeaderValue, Method, StatusCode};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
 use utoipa::OpenApi;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
@@ -80,6 +85,8 @@ fn documented() -> OpenApiRouter<Arc<App>> {
 		.routes(routes!(terminal::sales_csv))
 		.routes(routes!(terminal::get_sale))
 		.routes(routes!(terminal::cancel_sale))
+		.routes(routes!(terminal::add_onchain))
+		.routes(routes!(terminal::pay_with_card))
 		.routes(routes!(owner::register))
 		.routes(routes!(owner::challenge))
 		.routes(routes!(owner::login))
@@ -124,6 +131,46 @@ pub fn router(app: Arc<App>) -> Router {
 		.route("/brands/{brand}/{file}", get(web::brand_asset))
 		.fallback(web::asset)
 		.with_state(app)
+		.layer(axum::middleware::from_fn(lnurl_cors))
+}
+
+/// The LNURL endpoints, which a wallet on any site may call.
+fn is_lnurl(path: &str) -> bool {
+	path.starts_with("/.well-known/lnurlp/") || path.starts_with("/api/v1/lnurlp/")
+}
+
+/// LNURL (LUD-01) lets browser wallets call a service from their own
+/// origin, so its public, unauthenticated GET endpoints allow any origin,
+/// errors included, so the wallet can show the reason. The owner and
+/// terminal APIs stay same-origin.
+async fn lnurl_cors(req: Request, next: Next) -> Response {
+	if !is_lnurl(req.uri().path()) {
+		return next.run(req).await;
+	}
+	if req.method() == Method::OPTIONS {
+		return (StatusCode::NO_CONTENT, [
+			(ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
+			(ACCESS_CONTROL_ALLOW_METHODS, "GET, OPTIONS"),
+			(ACCESS_CONTROL_ALLOW_HEADERS, "*"),
+		]).into_response();
+	}
+	let mut response = next.run(req).await;
+	response.headers_mut().insert(ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
+	response
+}
+
+#[cfg(test)]
+mod lnurl_cors_test {
+	use super::is_lnurl;
+
+	#[test]
+	fn only_lnurl_paths_get_cors() {
+		assert!(is_lnurl("/.well-known/lnurlp/cafe"));
+		assert!(is_lnurl("/api/v1/lnurlp/cafe/callback"));
+		assert!(!is_lnurl("/api/v1/owner/store"));
+		assert!(!is_lnurl("/api/v1/sales"));
+		assert!(!is_lnurl("/.well-known/other"));
+	}
 }
 
 fn bearer(parts: &Parts) -> Result<&str, ApiError> {
@@ -216,6 +263,10 @@ pub struct StoreView {
 	/// Sales below this many sats offer no on-chain address.
 	#[schema(example = 50000)]
 	pub onchain_min_sat: i64,
+	/// The smallest sale, in sats: below it the Ark server's Lightning
+	/// receive fee would take the whole amount. It follows the server's fees.
+	#[schema(example = 2)]
+	pub min_sale_sat: u64,
 	/// `null` when the store has none. Its domain is the host of the
 	/// brand's public URL.
 	#[schema(example = "cornercafe@pay.example.com")]
@@ -225,7 +276,7 @@ pub struct StoreView {
 }
 
 impl StoreView {
-	pub fn new(app: &App, store: &Store) -> StoreView {
+	pub async fn new(app: &App, store: &Store) -> StoreView {
 		StoreView {
 			name: store.name.clone(),
 			currency: store.currency.clone(),
@@ -233,10 +284,48 @@ impl StoreView {
 			// and amounts show with the usual 2.
 			currency_decimals: app.price.decimals(&store.currency).unwrap_or(2),
 			onchain_min_sat: store.onchain_min_sat,
+			// No amount leaves anything when the fee is 100% or more: then no
+			// sale is possible, which u64::MAX says.
+			min_sale_sat: crate::sales::min_lightning_amount(&app.ark.ark_info().await.fees.lightning_receive)
+				.map_or(u64::MAX, |min| min.to_sat()),
 			lightning_address: store.lightning_address_name.as_ref()
 				.zip(app.cfg.brand(&store.brand))
 				.map(|(n, brand)| format!("{}@{}", n, brand.host())),
 			brand: store.brand.clone(),
+		}
+	}
+}
+
+/// How a store looks to its owner: what a terminal sees, and what the
+/// owner's wallet needs to keep its accounts in step with posd.
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+pub struct OwnerStoreView {
+	#[serde(flatten)]
+	pub store: StoreView,
+	/// The registered Ark address, whose key owns the store.
+	#[schema(example = "ark1…")]
+	pub ark_address: String,
+	#[schema(example = "tr([fingerprint/86'/0'/1']xpub…/0/*)")]
+	pub onchain_descriptor: String,
+	/// The next derivation index posd gives a sale from `onchain_descriptor`.
+	/// Every index below it may have been shown to a payer: a wallet that
+	/// restores the account scans at least that far, and gives none of
+	/// those addresses out for its own receives.
+	#[schema(example = 12)]
+	pub next_onchain_index: i64,
+	/// `null` when the owner registered none.
+	#[schema(example = "sp1q…")]
+	pub silent_payment_address: Option<String>,
+}
+
+impl OwnerStoreView {
+	pub async fn new(app: &App, store: &Store) -> OwnerStoreView {
+		OwnerStoreView {
+			store: StoreView::new(app, store).await,
+			ark_address: store.ark_address.clone(),
+			onchain_descriptor: store.onchain_descriptor.clone(),
+			next_onchain_index: store.next_onchain_index,
+			silent_payment_address: store.silent_payment_address.clone(),
 		}
 	}
 }

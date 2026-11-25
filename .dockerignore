@@ -1,2 +1,4 @@
 target
 .git
+**/node_modules
+pos/web/dist

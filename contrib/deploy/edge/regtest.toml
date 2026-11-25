@@ -1,0 +1,40 @@
+# The edge on the shared regtest VM. Cloudflare's tunnel (cloudflared) is the
+# only way in: it connects from loopback with TLS, checks the edge's
+# certificate against our CA, and names the client in CF-Connecting-IP.
+# Production faces the internet directly: no real_ip settings, a public
+# certificate, and the same hosts and limits.
+listen = "127.0.0.1:9443"
+tls_cert = "/etc/scuttle/tls/edge.crt"
+tls_key = "/etc/scuttle/tls/edge.key"
+real_ip_from = ["127.0.0.1"]
+real_ip_header = "CF-Connecting-IP"
+hsts = true
+# cloudflared carries every client over a few HTTP/2 connections to the edge,
+# so the per-connection stream cap (32 by default, for clients connecting
+# directly) would be shared by everyone here.
+http2_max_concurrent_streams = 256
+
+# Clients that bypass the rate limits (never the WAF): the tailnet, the load
+# test simulator of Francis, and ours on x11r0n (each over IPv4 and IPv6).
+limit_exempt = ["100.64.0.0/10", "fd7a:115c:a1e0::/48",
+	"170.75.171.40", "2602:ffb6:4:6a61::/64",
+	"95.217.192.209", "2a01:4f9:4a:4fed::/64"]
+# posd's operator API, on top of its token: the tailnet and the VM itself.
+admin_allow = ["100.64.0.0/10", "fd7a:115c:a1e0::/48", "127.0.0.1"]
+
+[[ark]]
+host = "{name}-ark.{domain}"
+upstream = "127.0.0.1:3535"
+
+[[posd]]
+host = "{name}.{domain}"
+upstream = "127.0.0.1:3080"
+
+[[posd]]
+host = "{name}-bull.{domain}"
+upstream = "127.0.0.1:3080"
+
+# Overrides of render.py's defaults, per client address:
+# [limits.lnurl]
+# rate = "60r/m"
+# burst = 20

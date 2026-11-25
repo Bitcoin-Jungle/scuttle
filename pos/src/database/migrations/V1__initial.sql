@@ -13,8 +13,11 @@ CREATE TABLE store (
 	name TEXT NOT NULL,
 	ark_address TEXT NOT NULL UNIQUE,
 	onchain_descriptor TEXT NOT NULL,
-	-- The next derivation index to reserve for an on-chain sale.
+	-- The next derivation index to reserve for an on-chain sale. Every
+	-- index below it may have been shown to a payer.
 	next_onchain_index BIGINT NOT NULL DEFAULT 0,
+	-- The owner's BIP 352 silent payment address, if it gave one.
+	silent_payment_address TEXT,
 	currency TEXT NOT NULL,
 	-- The brand of the store, a key of posd's [brands] config.
 	brand TEXT NOT NULL,
@@ -26,6 +29,17 @@ CREATE TABLE store (
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	-- Each brand's domain has its own names.
 	UNIQUE (brand, lightning_address_name)
+);
+
+-- A Lightning address name a store gave up, held for it for a while, so a
+-- payer who saved the old address cannot pay another store. Only the store
+-- that gave it up can take it back before the hold ends.
+CREATE TABLE held_name (
+	brand TEXT NOT NULL,
+	name TEXT NOT NULL,
+	store_id BIGINT NOT NULL REFERENCES store(id),
+	held_until TIMESTAMPTZ NOT NULL,
+	PRIMARY KEY (brand, name)
 );
 
 -- A paired terminal. Only the hash of its token is stored.
@@ -103,6 +117,8 @@ CREATE TABLE sale (
 	request_fingerprint TEXT
 );
 CREATE INDEX sale_store_id_idx ON sale (store_id, id DESC);
+-- A store's sales in a date range (CSV export).
+CREATE INDEX sale_store_created_idx ON sale (store_id, created_at);
 CREATE INDEX sale_watch_idx ON sale (state, expires_at);
 CREATE UNIQUE INDEX sale_request_key_idx ON sale (device_id, request_key)
 	WHERE request_key IS NOT NULL;
@@ -123,8 +139,8 @@ CREATE TABLE sale_payment (
 	pending_sat BIGINT NOT NULL DEFAULT 0,
 	txids TEXT[],
 	-- When the rail stopped needing checks: a Lightning payment delivered,
-	-- canceled or expired. On-chain payments stay unsettled: their watch
-	-- window decides how long they are checked.
+	-- canceled or expired, or an on-chain address whose watch window ended
+	-- after its sale was final.
 	settled_at TIMESTAMPTZ,
 	UNIQUE (sale_id, rail)
 );
@@ -132,6 +148,10 @@ CREATE TABLE sale_payment (
 -- sales.
 CREATE UNIQUE INDEX sale_payment_onchain_address_idx ON sale_payment (onchain_address)
 	WHERE onchain_address IS NOT NULL;
--- The watcher reads the unsettled Lightning payments on every pass.
+-- The watcher reads the unsettled payments of each rail: Lightning on every
+-- pass, on-chain on the passes that check addresses. Settled rows leave the
+-- indexes, so a pass costs what is being watched, not the sales history.
 CREATE INDEX sale_payment_lightning_unsettled_idx ON sale_payment (sale_id)
 	WHERE rail = 'lightning' AND settled_at IS NULL;
+CREATE INDEX sale_payment_onchain_unsettled_idx ON sale_payment (sale_id)
+	WHERE rail = 'onchain' AND settled_at IS NULL;
