@@ -531,10 +531,24 @@ CREATE UNIQUE INDEX sale_payment_onchain_address_idx ON public.sale_payment USIN
 
 
 --
+-- Name: sale_payment_onchain_unsettled_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX sale_payment_onchain_unsettled_idx ON public.sale_payment USING btree (sale_id) WHERE ((rail = 'onchain'::public.payment_rail) AND (settled_at IS NULL));
+
+
+--
 -- Name: sale_request_key_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE UNIQUE INDEX sale_request_key_idx ON public.sale USING btree (device_id, request_key) WHERE (request_key IS NOT NULL);
+
+
+--
+-- Name: sale_store_created_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX sale_store_created_idx ON public.sale USING btree (store_id, created_at);
 
 
 --

@@ -9,6 +9,7 @@
 //!   a delivered payment was made in time and pays an expired sale too.
 //! - An on-chain address is checked often while its sale is live, and
 //!   rarely after, until the watch window ends, for late and extra payments.
+//!   Then it is settled: the watcher stops reading it.
 //!   An `in-progress` sale stays live until its payment confirms or leaves
 //!   the mempool, however long that takes.
 
@@ -112,6 +113,9 @@ pub async fn run_once(app: &App, pass: Pass) -> anyhow::Result<()> {
 	if pass.live_onchain {
 		changed |= expire(app, &held).await?;
 	}
+	if pass.final_onchain {
+		settle_watched_out(app).await?;
+	}
 	if changed {
 		app.notify_sale_change();
 	}
@@ -127,12 +131,31 @@ async fn watched_payments(app: &App, pass: Pass) -> anyhow::Result<Vec<WatchedPa
 		JOIN sale s ON s.id = p.sale_id
 		WHERE (p.rail = 'lightning' AND p.settled_at IS NULL
 				AND s.expires_at > NOW() - make_interval(secs => $1))
-			OR (p.rail = 'onchain' AND $2 AND s.state IN ('open', 'in-progress'))
-			OR (p.rail = 'onchain' AND $3 AND s.state IN ('paid', 'expired', 'canceled')
+			OR (p.rail = 'onchain' AND p.settled_at IS NULL AND $2 AND s.state IN ('open', 'in-progress'))
+			OR (p.rail = 'onchain' AND p.settled_at IS NULL AND $3
+				AND s.state IN ('paid', 'expired', 'canceled')
 				AND s.expires_at > NOW() - make_interval(secs => $1))
 		ORDER BY s.device_id IS NULL, p.id
 	", &[&(app.cfg.sales.watch_secs as f64), &pass.live_onchain, &pass.final_onchain]).await?;
 	Ok(rows.iter().map(WatchedPayment::from_row).collect())
+}
+
+/// Settles the on-chain addresses of final sales whose watch window ended,
+/// which the watcher no longer reads. Settled, they leave the watcher's
+/// index, so its passes do not grow with the sales history.
+async fn settle_watched_out(app: &App) -> anyhow::Result<()> {
+	let conn = app.db.conn().await?;
+	let settled = conn.execute("
+		UPDATE sale_payment p SET settled_at = NOW()
+		FROM sale s
+		WHERE s.id = p.sale_id AND p.rail = 'onchain' AND p.settled_at IS NULL
+			AND s.state IN ('paid', 'expired', 'canceled')
+			AND s.expires_at <= NOW() - make_interval(secs => $1)
+	", &[&(app.cfg.sales.watch_secs as f64)]).await?;
+	if settled > 0 {
+		tracing::debug!("settled {} on-chain addresses past their watch window", settled);
+	}
+	Ok(())
 }
 
 /// What a check of one rail found.
