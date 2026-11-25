@@ -277,6 +277,19 @@ ingress:
     service: https://127.0.0.1:8041
     originRequest:
       noTLSVerify: true
+  # The Bull Bitcoin exchange (BBX) staging stack, which Francis runs on this
+  # VM from ~/bbx-staging, outside BULL's regtest stack. Its own nginx
+  # ingresses on loopback hold its access rules (Basic Auth on BB-Admin and
+  # staff API methods); it is not ours to run in production, so it does not
+  # go through our edge.
+  - hostname: $NAME-bbx.$DOMAIN
+    service: http://127.0.0.1:3130
+  - hostname: $NAME-accounts.$DOMAIN
+    service: http://127.0.0.1:14455
+  - hostname: $NAME-api.$DOMAIN
+    service: http://127.0.0.1:18880
+  - hostname: $NAME-bbadmin.$DOMAIN
+    service: http://127.0.0.1:3132
   - service: http_status:404
 EOF
 sudo cloudflared tunnel --config /etc/cloudflared/config.yml ingress validate >/dev/null
@@ -316,7 +329,7 @@ done
 host=$(tailscale status --self --json | jq -r '.Self.DNSName | rtrimstr(".")')
 echo
 echo "Route any new names from a machine with a cloudflared login for $DOMAIN:"
-for h in boltz crash explorer liquid-explorer electrum-ws payjoin-a payjoin-b console; do echo "  cloudflared tunnel route dns $tunnel $NAME-$h.$DOMAIN"; done
+for h in boltz crash explorer liquid-explorer electrum-ws payjoin-a payjoin-b console bbx accounts api bbadmin; do echo "  cloudflared tunnel route dns $tunnel $NAME-$h.$DOMAIN"; done
 echo "posd       $BULL_REGTEST_POSD_URL  (Bull: $BULL_REGTEST_POSD_BULL_URL)"
 echo "Ark        https://$NAME-ark.$DOMAIN"
 echo "Esplora    https://$NAME-esplora.$DOMAIN  (Liquid: https://$NAME-liquid.$DOMAIN)"
