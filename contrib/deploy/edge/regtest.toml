@@ -14,9 +14,11 @@ hsts = true
 # directly) would be shared by everyone here.
 http2_max_concurrent_streams = 256
 
-# Clients that bypass the rate limits (never the WAF): the tailnet and the
-# load test simulator of Francis (IPv4 and IPv6).
-limit_exempt = ["100.64.0.0/10", "fd7a:115c:a1e0::/48", "170.75.171.40", "2602:ffb6:4:6a61::/64"]
+# Clients that bypass the rate limits (never the WAF): the tailnet, the load
+# test simulator of Francis, and ours on x11r0n (each over IPv4 and IPv6).
+limit_exempt = ["100.64.0.0/10", "fd7a:115c:a1e0::/48",
+	"170.75.171.40", "2602:ffb6:4:6a61::/64",
+	"95.217.192.209", "2a01:4f9:4a:4fed::/64"]
 # posd's operator API, on top of its token: the tailnet and the VM itself.
 admin_allow = ["100.64.0.0/10", "fd7a:115c:a1e0::/48", "127.0.0.1"]
 
